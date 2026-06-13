@@ -300,7 +300,14 @@ body{font-family:'Outfit',sans-serif;background:var(--ink);color:var(--text);min
 .f2{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
 .f3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;}
 .ff{grid-column:1/-1;}
-@media(max-width:650px){.f2,.f3{grid-template-columns:1fr;}}
+
+
+@media(max-width:650px){
+  .f2,
+  .f3{
+    grid-template-columns:1fr;
+  }
+}
 
 /* MODAL */
 .overlay{position:fixed;inset:0;background:rgba(0,0,0,.8);backdrop-filter:blur(6px);z-index:800;display:none;align-items:center;justify-content:center;padding:16px;}
@@ -322,7 +329,13 @@ body{font-family:'Outfit',sans-serif;background:var(--ink);color:var(--text);min
 /* MISC */
 .two-col{display:grid;grid-template-columns:1fr 1fr;gap:18px;}
 .three-col{display:grid;grid-template-columns:1fr 1fr 1fr;gap:18px;}
-@media(max-width:860px){.two-col,.three-col{grid-template-columns:1fr;}}
+
+@media(max-width:860px){
+  .two-col,
+  .three-col{
+    grid-template-columns:1fr;
+  }
+}
 .fbar{display:flex;gap:9px;flex-wrap:wrap;margin-bottom:14px;align-items:center;}
 .fbar input,.fbar select{background:var(--ink3);border:1px solid var(--ink5);border-radius:var(--r);padding:7px 11px;color:var(--text);font-family:'Outfit',sans-serif;font-size:12px;outline:none;}
 .fbar input:focus,.fbar select:focus{border-color:var(--gold);}
@@ -409,6 +422,48 @@ body{font-family:'Outfit',sans-serif;background:var(--ink);color:var(--text);min
 .cust-loan-card.active::before{background:linear-gradient(90deg,var(--gold),var(--grn2));}
 .cust-loan-card.paid::before{background:var(--grn2);}
 .cust-loan-card.overdue::before{background:var(--ruby2);}
+
+@media (max-width: 768px){
+
+  .app-shell{
+    flex-direction:column;
+  }
+
+  .sidebar{
+    width:100%;
+    min-width:100%;
+    height:auto;
+    position:relative;
+  }
+
+  .two-col,
+  .three-col,
+  .f2,
+  .f3{
+    grid-template-columns:1fr !important;
+  }
+
+  .lp-hero{
+    grid-template-columns:1fr;
+    gap:25px;
+  }
+
+  .modal{
+    padding:18px;
+  }
+
+  .sec-hd{
+    flex-direction:column;
+    align-items:flex-start;
+    gap:10px;
+  }
+
+  .tw{
+    overflow-x:auto;
+  }
+
+}
+
 </style>
 </head>
 <body>
