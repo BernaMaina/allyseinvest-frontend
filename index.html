@@ -1164,16 +1164,31 @@ async function startApp(){
 function showPanel(id){
   document.querySelectorAll('.sb-item').forEach(e=>e.classList.remove('active'));
   document.getElementById('nav-'+id)?.classList.add('active');
+
   const tt=document.getElementById('tb-title');
   if(tt)tt.innerHTML=TITLES[id]||id;
+
   STATE.panel=id;
+
+  // Close mobile drawer if open
+  const sidebar = document.querySelector(".sidebar");
+  const overlay = document.getElementById("mobile-overlay");
+
+  sidebar?.classList.remove("open");
+  overlay?.classList.remove("show");
+
   const el=document.getElementById('content');
   el.innerHTML=loading();
-  const r=PANEL_RENDERERS[id];
-  if(r)r(el).catch(e=>{el.innerHTML=`<div class="abox danger">Error loading panel: ${e.message}</div>`;});
-  else el.innerHTML=`<div style="padding:40px;text-align:center;color:var(--text3)">Coming soon…</div>`;
-}
 
+  const r=PANEL_RENDERERS[id];
+
+  if(r)r(el).catch(e=>{
+    el.innerHTML=`<div class="abox danger">Error loading panel: ${e.message}</div>`;
+  });
+  else{
+    el.innerHTML=`<div style="padding:40px;text-align:center;color:var(--text3)">Coming soon…</div>`;
+  }
+}
 
 
 const PANEL_RENDERERS={};
