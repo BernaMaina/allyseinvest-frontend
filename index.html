@@ -240,6 +240,21 @@ body{font-family:'Outfit',sans-serif;background:var(--ink);color:var(--text);min
 .logout-btn:hover{border-color:var(--ruby2);color:var(--ruby3);}
 .main{flex:1;overflow-y:auto;background:var(--ink);display:flex;flex-direction:column;}
 .topbar{padding:13px 26px;border-bottom:1px solid var(--ink4);display:flex;align-items:center;justify-content:space-between;background:var(--ink2);position:sticky;top:0;z-index:100;}
+.mobile-menu-btn{
+  display:none;
+  width:38px;
+  height:38px;
+  border:none;
+  border-radius:8px;
+  background:var(--ink3);
+  color:var(--text);
+  cursor:pointer;
+  font-size:18px;
+}
+
+.mobile-menu-btn:hover{
+  border:1px solid var(--gold);
+}
 .tb-title{font-family:'Playfair Display',serif;font-size:19px;font-weight:700;}
 .tb-title span{background:linear-gradient(135deg,var(--gold2),var(--grn3));-webkit-background-clip:text;-webkit-text-fill-color:transparent;font-style:italic;}
 .tb-right{display:flex;align-items:center;gap:10px;}
@@ -425,6 +440,12 @@ body{font-family:'Outfit',sans-serif;background:var(--ink);color:var(--text);min
 
 @media (max-width: 768px){
 
+  .mobile-menu-btn{
+  display:flex;
+  align-items:center;
+  justify-content:center;
+}
+
   .app-shell{
     flex-direction:column;
   }
@@ -577,14 +598,32 @@ body{font-family:'Outfit',sans-serif;background:var(--ink);color:var(--text);min
       </div>
     </aside>
     <div class="main">
-      <div class="topbar">
-        <div class="tb-title" id="tb-title">Dashboard <span>Overview</span></div>
-        <div class="tb-right">
+<div class="topbar">
 
-          <div class="tb-date mono" id="tb-date"></div>
-          <div class="nbell" id="nbell-btn">🔔<span class="dot hidden" id="nb-dot"></span></div>
-        </div>
-      </div>
+  <div style="display:flex;align-items:center;gap:12px;">
+
+    <button id="mobile-menu-btn" class="mobile-menu-btn">
+      ☰
+    </button>
+
+    <div class="tb-title" id="tb-title">
+      Dashboard <span>Overview</span>
+    </div>
+
+  </div>
+
+  <div class="tb-right">
+
+    <div class="tb-date mono" id="tb-date"></div>
+
+    <div class="nbell" id="nbell-btn">
+      🔔
+      <span class="dot hidden" id="nb-dot"></span>
+    </div>
+
+  </div>
+
+</div>
       <div class="content" id="content"></div>
     </div>
   </div>
