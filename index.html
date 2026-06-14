@@ -1780,652 +1780,161 @@ async function savePayment(){
 // ═══════════════════════════════════════
 // IMPORT
 // ═══════════════════════════════════════
-// ═══════════════════════════════════════
-// IMPORT — COLUMN ALIASES
-// Covers every real header variation seen in the Excel sheet
-// ═══════════════════════════════════════
-const COL_ALIASES = {
-  nid:     ['id no','id no.','id number','national id','nid','id'],
-  name:    ['name','full name','fullname','customer name'],
-  phone:   ['phone','mobile','tel','telephone','mpesa'],
-  biz:     ['business','business name','biz'],
-  bsloc:   ['bs location','business location','bslocation','location'],
-  res:     ['residency','residence','estate'],
-  p:       ['loan amount','amount','principal'],
-  instAmt: ['instlmnt amt','instalment amt','installment amt','weekly instalment','weekly amt','inst amt'],
-  w:       ['no weeks','instlmnts','no. weeks','instalments','installments','weeks','terms','duration'],
-  start:   ['loan date','date','loandate','loan date'],
-  day:     ['day','collection day','payment day'],
-  gname:   ['guarantor name','guarantor'],
-  gphone:  ['guarantor no','guarantor no.','guarantor phone'],
-  i1:      ['wk1 instlmnt','wk1 instalment','wk1','instalment1','instlmnt1','week1'],
-  i2:      ['wk2 instlmnt','wk2 instalment','wk2','instalment2','instlmnt2','week2'],
-  i3:      ['wk3 instlmnt','wk3 instalment','wk3','instalment3','instlmnt3','week3'],
-  i4:      ['wk4 instlmnt','wk4 instalment','wk4','instalment4','instlmnt4','week4'],
-  i5:      ['wk5 instalmnt','wk5 instlmnt','wk5 instalment','wk5','instalment5','instlmnt5','week5'],
-  i6:      ['wk6 instlmnt','wk6 instalment','wk6','instalment6','instlmnt6','week6'],
-};
-
-// ───────────────────────────────────────
-// Normalise a raw header string for fuzzy matching
-// ───────────────────────────────────────
-function normKey(s) {
-  return (s || '').toString().toLowerCase().trim()
-    .replace(/[^a-z0-9 .]/g, '').replace(/\s+/g, ' ');
+const COL_ALIASES={nid:['id no','id no.','id number','national id','nid'],name:['name','full name','fullname','customer name'],phone:['phone','mobile','tel','telephone','mpesa'],biz:['business','business name','biz'],bsloc:['bs location','business location','bslocation','location'],res:['residency','residence','estate'],p:['amount','principal','loan amount'],w:['instlmnts','instalments','installments','weeks','terms'],start:['loan date','date','loandate'],day:['day','collection day','payment day'],gname:['guarantor name','guarantor'],gphone:['guarantor no','guarantor no.','guarantor phone'],i1:['instlmnt1','instalment1'],i2:['instlmnt2','instalment2'],i3:['instlmnt3','instalment3'],i4:['instlmnt4','instalment4'],i5:['instalmnt5','instalment5'],i6:['instlmnt6','instalment6']};
+function normKey(s){return(s||'').toString().toLowerCase().trim().replace(/[^a-z0-9 .]/g,'').replace(/\s+/g,' ');}
+function mapHeaders(headers){const map={};headers.forEach((h,i)=>{const nk=normKey(h);for(const[field,aliases]of Object.entries(COL_ALIASES)){if(!map[field]&&aliases.some(a=>nk===a||nk.includes(a)||a.includes(nk)))map[field]=i;}});return map;}
+let impBuf=[];
+function parseExcelFile(file){return new Promise((res,rej)=>{const r=new FileReader();r.onload=e=>{try{const wb=XLSX.read(e.target.result,{type:'array'}),ws=wb.Sheets[wb.SheetNames[0]],rows=XLSX.utils.sheet_to_json(ws,{header:1,defval:''});if(!rows.length){rej('Empty file');return;}const headers=rows[0].map(h=>(h||'').toString()),hm=mapHeaders(headers),parsed=[];for(let i=1;i<rows.length;i++){const row=rows[i];if(!row.length||row.every(c=>!c))continue;const g=f=>hm[f]!==undefined?(row[hm[f]]||'').toString().trim():'',gn=f=>parseFloat(g(f))||0,inst=[];['i1','i2','i3','i4','i5','i6'].forEach(k=>{const v=gn(k);if(v>0)inst.push(v);});parsed.push({nid:g('nid'),name:g('name'),phone:g('phone'),biz:g('biz'),bsloc:g('bsloc'),res:g('res'),p:gn('p'),w:parseInt(g('w'))||0,start:g('start'),day:g('day'),gname:g('gname'),gphone:g('gphone'),instalments:inst});}res(parsed);}catch(e){rej('Parse error: '+e.message);}};r.onerror=()=>rej('Read failed');r.readAsArrayBuffer(file);});}
+async function fileSelect(e){const f=e.target.files[0];if(f)await processImportFile(f);}
+async function fileDrop(e){e.preventDefault();const f=e.dataTransfer.files[0];if(f)await processImportFile(f);}
+async function processImportFile(file){
+  const prev=document.getElementById('imp-prev'),acts=document.getElementById('imp-acts');
+  prev.innerHTML='<div class="ai-load" style="padding:14px">Parsing file…</div>';acts.style.display='none';impBuf=[];
+  try{const rows=await parseExcelFile(file),existing=await getCustomers(),existPhones=new Set(existing.map(c=>c.phone));let ok=0,warn=0,err=0;
+  const validated=rows.map(row=>{if(!row.name)return{...row,_s:'err',_m:'Missing name'};if(!row.phone)return{...row,_s:'err',_m:'Missing phone'};if(existPhones.has(row.phone))return{...row,_s:'warn',_m:'Phone exists in DB'};return{...row,_s:'ok',_m:'Ready'};});
+  validated.forEach(r=>{if(r._s==='ok'){ok++;impBuf.push(r);}else if(r._s==='warn')warn++;else err++;});
+  let html=`<div class="abox ${ok>0?'success':'danger'}" style="margin-top:12px">Found <b>${rows.length}</b> rows · <b style="color:var(--grn3)">${ok}</b> ready · <b style="color:var(--gold2)">${warn}</b> duplicates · <b style="color:var(--ruby3)">${err}</b> errors</div>`;
+  html+=`<div style="max-height:240px;overflow-y:auto;margin-top:8px">`;
+  validated.slice(0,15).forEach(row=>{html+=`<div class="ir ${row._s}"><div class="ir-s">${row._s==='ok'?'✓':row._s==='warn'?'!':'✗'}</div><b>${row.name||'—'}</b><span class="muted" style="margin-left:8px">${row.phone}</span><span class="muted" style="margin-left:8px">${row.biz||''}</span>${row.p?`<span class="mono gold" style="margin-left:auto">KES ${kshS(row.p)}</span>`:''}<span style="font-size:9px;margin-left:8px;color:${row._s==='ok'?'var(--grn3)':row._s==='warn'?'var(--gold2)':'var(--ruby3)'}">${row._m}</span></div>`;});
+  if(rows.length>15)html+=`<div style="text-align:center;padding:6px;font-size:10px;color:var(--text3)">… and ${rows.length-15} more</div>`;
+  html+='</div>';prev.innerHTML=html;if(ok>0){acts.style.display='flex';document.getElementById('imp-btn').textContent=`Import ${ok} Customer${ok!==1?'s':''}`;}}
+  catch(e){prev.innerHTML=`<div class="abox danger" style="margin-top:12px">❌ ${e}</div>`;}
 }
+async function doImport(){
+  if(!impBuf.length)return;
 
-// ───────────────────────────────────────
-// Map raw header row → field indices
-// Uses exact match first, then substring containment
-// ───────────────────────────────────────
-function mapHeaders(headers) {
-  const map = {};
-  headers.forEach((h, i) => {
-    const nk = normKey(h);
-    if (!nk) return;
-    for (const [field, aliases] of Object.entries(COL_ALIASES)) {
-      if (map[field] !== undefined) continue;
-      if (aliases.some(a => nk === a)) { map[field] = i; return; }
-    }
-    // second pass — partial match
-    for (const [field, aliases] of Object.entries(COL_ALIASES)) {
-      if (map[field] !== undefined) continue;
-      if (aliases.some(a => nk.includes(a) || a.includes(nk))) { map[field] = i; }
-    }
-  });
-  return map;
-}
-
-// ───────────────────────────────────────
-// Convert any date format from the Excel sheet to YYYY-MM-DD
-//
-// Handles:
-//   • Excel serial  e.g. 46331  → 2026-12-31
-//   • DD/MM/YYYY    e.g. 13/05/2026
-//   • D/M/YYYY      e.g. 22/5/2026
-//   • Malformed     e.g. 27//5//2026  (extra slashes)
-// ───────────────────────────────────────
-function normalizeExcelDate(raw) {
-  if (raw === null || raw === undefined || raw === '') return today();
-  const s = raw.toString().trim();
-  if (!s) return today();
-
-  // ── CASE 1: JavaScript Date object (openpyxl/XLSX parsed a date cell) ──────
-  // When XLSX.js reads a date-formatted cell with raw:true it returns a JS Date.
-  // The cell format is mm/dd/yyyy but the user typed DD/MM/YYYY, so
-  // day and month are SWAPPED by Excel. We fix this by swapping them back.
-  if (raw instanceof Date && !isNaN(raw)) {
-    const d = raw.getUTCDate();    // Excel stored this as the MONTH (user's day)
-    const m = raw.getUTCMonth()+1; // Excel stored this as the DAY  (user's month)
-    const y = raw.getUTCFullYear();
-    // Swap: the number Excel thinks is the month is really the day, and vice-versa
-    const dd = String(m).padStart(2,'0'); // user's day  = what Excel thinks is month
-    const mm = String(d).padStart(2,'0'); // user's month = what Excel thinks is day
-    return `${y}-${mm}-${dd}`;
-  }
-
-  // ── CASE 2: ISO string emitted by XLSX when raw:true + date cell ────────────
-  // e.g. "2026-11-05T00:00:00.000Z" — same swap needed
-  const isoMatch = s.match(/^(\d{4})-(\d{2})-(\d{2})(?:T.*)?$/);
-  if (isoMatch) {
-    const y = isoMatch[1];
-    const excelMonth = isoMatch[2]; // really the user's DAY
-    const excelDay   = isoMatch[3]; // really the user's MONTH
-    return `${y}-${excelDay}-${excelMonth}`;
-  }
-
-  // ── CASE 3: Plain text date typed as DD/MM/YYYY (no Excel formatting) ───────
-  // Clean up repeated slashes e.g. 27//5//2026  →  27/5/2026
-  const cleaned = s.replace(/\/+/g, '/');
-  const dmyMatch = cleaned.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
-  if (dmyMatch) {
-    let [, d, m, y] = dmyMatch;
-    if (y.length === 2) y = '20' + y;
-    return `${y}-${m.padStart(2,'0')}-${d.padStart(2,'0')}`;
-  }
-
-  // ── CASE 4: Already YYYY-MM-DD ───────────────────────────────────────────────
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
-
-  return today();
-}
-
-// ───────────────────────────────────────
-// Clean an ID-number cell (scientific notation → integer string)
-// e.g.  "2.9124546E7"  →  "29124546"
-//       "371396.0"     →  "371396"
-// ───────────────────────────────────────
-function cleanNID(raw) {
-  if (!raw && raw !== 0) return '';
-  const s = raw.toString().trim();
-  if (!s) return '';
-  // Scientific notation or float
-  if (/[eE]|\./.test(s) && !s.includes('/')) {
-    const n = parseFloat(s);
-    if (!isNaN(n)) return String(Math.round(n));
-  }
-  return s;
-}
-
-// ───────────────────────────────────────
-// Clean a phone number cell (same issue)
-// ───────────────────────────────────────
-function cleanPhone(raw) {
-  if (!raw && raw !== 0) return '';
-  const s = raw.toString().trim();
-  if (!s) return '';
-  if (/[eE]/.test(s)) {
-    const n = parseFloat(s);
-    if (!isNaN(n)) return String(Math.round(n));
-  }
-  // Remove .0 suffix
-  return s.replace(/\.0+$/, '');
-}
-
-// ───────────────────────────────────────
-// Determine overdue status for a loan row
-//
-// Logic:
-//   • For each instalment slot 1..totalWeeks:
-//       - dueDate = startDate + N*7 days
-//       - If a payment exists for that slot AND amount >= weeklyAmt → PAID slot
-//       - If a payment exists but amount < weeklyAmt → PARTIAL (counts as paid slot
-//         but flags partial; overdue check still applies to shortfall week)
-//       - If no payment AND dueDate < now → OVERDUE
-//   • After the last recorded payment, if more than 7 days have elapsed
-//     since that payment's due date AND the loan is not cleared → OVERDUE
-// ───────────────────────────────────────
-function computeLoanStatus(startDateStr, totalWeeks, weeklyAmt, payments, isCleared) {
-  if (isCleared) return 'paid';
-
-  const now = new Date();
-  const startDate = new Date(startDateStr + 'T00:00:00Z');
-
-  let lastPaidWeek = 0;
-  let overdue = false;
-
-  for (let i = 1; i <= totalWeeks; i++) {
-    const dueDate = new Date(startDate.getTime() + i * 7 * 86400000);
-    const paid = payments[i - 1] || 0; // zero-indexed array
-
-    if (paid > 0) {
-      lastPaidWeek = i;
-      // Partial payment: check if next week already overdue
-    } else {
-      // No payment for this slot
-      if (dueDate < now) {
-        overdue = true;
-        break;
-      }
-    }
-  }
-
-  // Even if all recorded slots have payments, check if a new week has elapsed
-  // since the last payment due date
-  if (!overdue && lastPaidWeek < totalWeeks) {
-    const nextDueDate = new Date(startDate.getTime() + (lastPaidWeek + 1) * 7 * 86400000);
-    if (nextDueDate < now) overdue = true;
-  }
-
-  if (payments.filter(p => p > 0).length >= totalWeeks) return 'paid';
-  return overdue ? 'overdue' : 'active';
-}
-
-// ───────────────────────────────────────
-// Parse the Excel file into structured row objects
-// ───────────────────────────────────────
-let impBuf = [];
-
-function parseExcelFile(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = e => {
-      try {
-        const wb    = XLSX.read(e.target.result, { type: 'array' });
-        const ws    = wb.Sheets[wb.SheetNames[0]];
-        // raw:true so we get the original cell values before XLSX coerces them
-        const rows  = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: true });
-
-        if (!rows.length) { reject('Empty file'); return; }
-
-        const headers = rows[0].map(h => (h || '').toString());
-        const hm      = mapHeaders(headers);
-        const parsed  = [];
-
-        for (let i = 1; i < rows.length; i++) {
-          const row = rows[i];
-          if (!row.length || row.every(c => c === '' || c === null || c === undefined)) continue;
-
-          // Helper: get raw cell value at mapped column
-          const cell    = field => hm[field] !== undefined ? row[hm[field]] : '';
-          const cellStr = field => (cell(field) || '').toString().trim();
-          const cellNum = field => { const v = parseFloat(cellStr(field)); return isNaN(v) ? 0 : v; };
-
-          // ── Skip rows with no ID number ──────────────────────────────
-          const rawNID = cell('nid');
-          const nidStr = cleanNID(rawNID);
-          if (!nidStr) continue;
-
-          // ── Core fields ──────────────────────────────────────────────
-          const name    = cellStr('name');
-          const phone   = cleanPhone(cell('phone'));
-          const biz     = cellStr('biz');
-          const bsloc   = cellStr('bsloc');
-          const res     = cellStr('res');
-          const p       = cellNum('p');           // Loan Amount (principal)
-          const instAmt = cellNum('instAmt');     // Weekly instalment from Excel
-          const w       = Math.round(cellNum('w')) || 0;  // No. of weeks
-          const start   = normalizeExcelDate(cell('start'));
-          const day     = cellStr('day');
-          const gname   = cellStr('gname');
-          const gphone  = cleanPhone(cell('gphone'));
-
-          // ── Instalment payment columns (wk1..wk6) ───────────────────
-          // Collect ALL columns beyond the known ones as potential extra instalment slots
-          const instKeys = ['i1','i2','i3','i4','i5','i6'];
-          const instPayments = instKeys.map(k => {
-            const v = cellNum(k);
-            return v > 0 ? v : 0;
-          });
-
-          // Check if any cell in the row (beyond col 18) contains "cleared" text
-          // This covers the "cleared" / "Cleared" annotation in an overflow column
-          const rowStr = row.map(c => (c || '').toString().toLowerCase()).join(' ');
-          const isCleared = rowStr.includes('cleared');
-
-          // If "cleared" is set, fill any missing instalment slots with the weekly amount
-          // so paid_count equals total weeks
-          let finalPayments = [...instPayments];
-          if (isCleared && instAmt > 0 && w > 0) {
-            for (let k = 0; k < w; k++) {
-              if (!finalPayments[k] || finalPayments[k] === 0) {
-                finalPayments[k] = instAmt;
-              }
-            }
-          }
-
-          parsed.push({
-            nid: nidStr,
-            name,
-            phone,
-            biz,
-            bsloc,
-            res,
-            p,
-            instAmt,   // actual weekly instalment amount from the sheet
-            w,
-            start,
-            day,
-            gname,
-            gphone,
-            payments: finalPayments,  // array of amounts per week (0 = not paid)
-            isCleared,
-          });
-        }
-
-        resolve(parsed);
-      } catch (err) {
-        reject('Parse error: ' + err.message);
-      }
-    };
-    reader.onerror = () => reject('File read failed');
-    reader.readAsArrayBuffer(file);
-  });
-}
-
-// ───────────────────────────────────────
-// File-picker and drag-drop handlers
-// ───────────────────────────────────────
-async function fileSelect(e) {
-  const f = e.target.files[0];
-  if (f) await processImportFile(f);
-}
-async function fileDrop(e) {
-  e.preventDefault();
-  const f = e.dataTransfer.files[0];
-  if (f) await processImportFile(f);
-}
-
-// ───────────────────────────────────────
-// Preview the file before committing
-// ───────────────────────────────────────
-async function processImportFile(file) {
-  const prev = document.getElementById('imp-prev');
-  const acts = document.getElementById('imp-acts');
-  prev.innerHTML = '<div class="ai-load" style="padding:14px">Parsing file…</div>';
-  acts.style.display = 'none';
-  impBuf = [];
-
-  try {
-    const rows     = await parseExcelFile(file);
-    const existing = await getCustomers();
-    const existPhones = new Set(existing.map(c => c.phone));
-
-    let ok = 0, warn = 0, err = 0;
-
-    const validated = rows.map(row => {
-      if (!row.name)  return { ...row, _s: 'err',  _m: 'Missing name' };
-      if (!row.phone) return { ...row, _s: 'err',  _m: 'Missing phone' };
-      if (existPhones.has(row.phone)) return { ...row, _s: 'warn', _m: 'Phone already in DB (will skip)' };
-      if (!row.p || row.p <= 0) return { ...row, _s: 'err', _m: 'Missing loan amount' };
-      if (!row.w || row.w <= 0) return { ...row, _s: 'err', _m: 'Missing no. of weeks' };
-      return { ...row, _s: 'ok', _m: 'Ready to import' };
-    });
-
-    validated.forEach(r => {
-      if      (r._s === 'ok')   { ok++;   impBuf.push(r); }
-      else if (r._s === 'warn') { warn++; }
-      else                      { err++;  }
-    });
-
-    const now = new Date();
-
-    let html = `<div class="abox ${ok > 0 ? 'success' : 'danger'}" style="margin-top:12px">
-      Found <b>${rows.length}</b> rows &nbsp;·&nbsp;
-      <b style="color:var(--grn3)">${ok}</b> ready &nbsp;·&nbsp;
-      <b style="color:var(--gold2)">${warn}</b> duplicates &nbsp;·&nbsp;
-      <b style="color:var(--ruby3)">${err}</b> errors
-    </div>`;
-
-    html += `<div style="max-height:280px;overflow-y:auto;margin-top:8px">`;
-
-    validated.slice(0, 20).forEach(row => {
-      // Compute overdue status for preview badge
-      let statusBadge = '';
-      if (row._s === 'ok' && row.p > 0 && row.w > 0) {
-        const wkAmt   = row.instAmt || weeklyFor(row.p, row.w);
-        const paidCnt = row.payments.filter(v => v > 0).length;
-        const status  = computeLoanStatus(row.start, row.w, wkAmt, row.payments, row.isCleared);
-        const paidPct = row.w > 0 ? Math.round(paidCnt / row.w * 100) : 0;
-        statusBadge = `<span class="bdg ${status==='paid'?'b-paid':status==='overdue'?'b-ov':'b-act'}" style="margin-left:6px">${status}</span>`;
-        statusBadge += `<span class="mono muted" style="font-size:9px;margin-left:6px">${paidCnt}/${row.w}wks</span>`;
-        if (row.isCleared) statusBadge += `<span style="font-size:9px;color:var(--grn3);margin-left:4px">✓ cleared</span>`;
-      }
-
-      html += `<div class="ir ${row._s}">
-        <div class="ir-s">${row._s==='ok'?'✓':row._s==='warn'?'!':'✗'}</div>
-        <div style="flex:1;min-width:0">
-          <div style="display:flex;align-items:center;flex-wrap:wrap;gap:4px">
-            <b>${row.name || '—'}</b>
-            <span class="mono muted" style="font-size:10px">${row.phone}</span>
-            ${row.p ? `<span class="mono gold" style="font-size:10px">KES ${kshS(row.p)}</span>` : ''}
-            ${row.instAmt ? `<span class="muted" style="font-size:9px">${kshS(row.instAmt)}/wk</span>` : ''}
-            ${statusBadge}
-          </div>
-          <div style="font-size:9px;color:${row._s==='ok'?'var(--grn3)':row._s==='warn'?'var(--gold2)':'var(--ruby3)'};margin-top:1px">
-            ${row._m} &nbsp;·&nbsp; Start: ${row.start} &nbsp;·&nbsp; ID: ${row.nid}
-          </div>
-        </div>
-      </div>`;
-    });
-
-    if (rows.length > 20) {
-      html += `<div style="text-align:center;padding:6px;font-size:10px;color:var(--text3)">… and ${rows.length - 20} more rows</div>`;
-    }
-    html += '</div>';
-
-    prev.innerHTML = html;
-
-    if (ok > 0) {
-      acts.style.display = 'flex';
-      document.getElementById('imp-btn').textContent = `Import ${ok} Customer${ok !== 1 ? 's' : ''} + Loans`;
-    }
-  } catch (e) {
-    prev.innerHTML = `<div class="abox danger" style="margin-top:12px">❌ ${e}</div>`;
-  }
-}
-
-// ───────────────────────────────────────
-// Execute the import into Supabase
-// ───────────────────────────────────────
-async function doImport() {
-  if (!impBuf.length) return;
-
-  const btn = document.getElementById('imp-btn');
-  btn.disabled = true;
+  const btn=document.getElementById('imp-btn');
+  btn.disabled=true;
   btn.classList.add('spin-btn');
 
-  let added = 0, loanCount = 0, payCount = 0, skipCount = 0;
-  const errors = [];
+  let added=0;
+  let loanCount=0;
 
-  try {
-    for (const row of impBuf) {
+  try{
 
-      // ── 1. Create / find customer ──────────────────────────────────
-      const custPayload = {
-        full_name:      row.name,
-        phone:          row.phone,
-        national_id:    row.nid   || null,
-        business_name:  row.biz   || null,
-        business_location: row.bsloc || null,
-        residence:      row.res   || null,
-        mpesa_number:   row.phone,
-        assigned_agent: CU.user.id,
-        status:         'active',
+    for(const row of impBuf){
+
+      const custPayload={
+        full_name:row.name,
+        phone:row.phone,
+        national_id:row.nid||null,
+        business_name:row.biz||null,
+        residence:row.res||null,
+        mpesa_number:row.phone,
+        assigned_agent:CU.user.id,
+        status:'active'
       };
 
       let cust;
-      try {
-        cust = await createCustomer(custPayload);
+
+      try{
+        cust=await createCustomer(custPayload);
         added++;
-      } catch (e) {
-        // If the customer already exists (unique phone violation) try to fetch them
-        try {
-          const { data } = await SB.from('customers').select('*').eq('phone', row.phone).single();
-          if (data) { cust = data; skipCount++; }
-          else { errors.push(`${row.name}: ${e.message}`); continue; }
-        } catch {
-          errors.push(`${row.name}: ${e.message}`);
-          continue;
-        }
-      }
-
-      // ── 2. Skip if no loan data ────────────────────────────────────
-      if (!row.p || row.p <= 0 || !row.w || row.w <= 0 || !cust) continue;
-
-      // ── 3. Determine weekly instalment amount ──────────────────────
-      // Use the amount from the Excel sheet (Instlmnt Amt column) if present,
-      // otherwise fall back to the rate-card calculation.
-      const weeklyAmt = row.instAmt > 0 ? row.instAmt : weeklyFor(row.p, row.w);
-
-      // ── 4. Compute total repayable from instalment × weeks ─────────
-      // If the instalment comes from Excel, use that directly.
-      // Rate-card interest is used only when we calculate ourselves.
-      let rateRow, interest, totalRepayable, processingFee;
-      try {
-        rateRow = gRate(row.p);
-        interest = rateRow.i[row.w] || (weeklyAmt * row.w - row.p);
-        processingFee = rateRow.pf || 0;
-      } catch {
-        interest = weeklyAmt * row.w - row.p;
-        processingFee = 0;
-      }
-      totalRepayable = weeklyAmt * row.w;
-
-      // ── 5. Determine loan status using overdue logic ───────────────
-      const loanStatus = computeLoanStatus(
-        row.start, row.w, weeklyAmt, row.payments, row.isCleared
-      );
-      const paidCount = row.payments.filter(v => v > 0).length;
-
-      // ── 6. Create the loan record ──────────────────────────────────
-      let loan;
-      try {
-        const lnum = await genLoanNumber();
-        loan = await createLoan({
-          loan_number:       lnum,
-          customer_id:       cust.id,
-          issued_by:         CU.user.id,
-          principal:         row.p,
-          interest:          interest,
-          total_repayable:   totalRepayable,
-          instalments:       row.w,
-          paid_count:        paidCount,
-          start_date:        row.start,
-          due_date:          addWeeks(row.start, row.w),
-          collection_day:    row.day || 'Monday',
-          purpose:           'Business / Working Capital',
-          registration_fee:  300,
-          processing_fee:    processingFee,
-          weekly_instalment: weeklyAmt,
-          status:            loanStatus,
-        });
-        loanCount++;
-      } catch (e) {
-        errors.push(`Loan for ${row.name}: ${e.message}`);
+      }catch(e){
         continue;
       }
 
-      // ── 7. Record instalment payments ──────────────────────────────
-      // payment date = start_date + instalment_number * 7 days
-      for (let i = 0; i < row.payments.length; i++) {
-        const amt = row.payments[i];
-        if (!amt || amt <= 0) continue;
+      if(row.p>0 && row.w>0 && cust){
 
-        const weekNum   = i + 1;
-        const payDate   = addWeeks(row.start, weekNum); // ISO date string
-        const isPartial = amt < weeklyAmt;
+        const rc=gRate(row.p);
+        const startDate=row.start||today();
 
-        try {
-          await createPayment({
-            loan_id:       loan.id,
-            amount:        amt,
-            mpesa_receipt: `IMPORT-WK${weekNum}`,
-            channel:       'M-Pesa Mobile',
-            instalment_no: weekNum,
-            paid_at:       new Date(payDate + 'T12:00:00Z').toISOString(),
-            recorded_by:   CU.user.id,
-            notes:         isPartial ? `Partial payment (${kshS(amt)} of ${kshS(weeklyAmt)})` : null,
+        const wk=row.instamt>0
+          ? row.instamt
+          : weeklyFor(row.p,row.w);
+
+        const tot=wk*row.w;
+
+        try{
+
+          const lnum=await genLoanNumber();
+
+          const loan=await createLoan({
+            loan_number:lnum,
+            customer_id:cust.id,
+            issued_by:CU.user.id,
+            principal:row.p,
+            interest:rc.i[row.w]||0,
+            total_repayable:tot,
+            instalments:row.w,
+            paid_count:row.paidCount,
+            start_date:startDate,
+            due_date:addWeeks(startDate,row.w),
+            collection_day:row.day||'Monday',
+            purpose:'Business / Working Capital',
+            registration_fee:300,
+            processing_fee:rc.pf||0,
+            weekly_instalment:wk,
+            status:row.loanStatus
           });
-          payCount++;
-        } catch (e) {
-          // Non-fatal: log and continue
-          errors.push(`Payment wk${weekNum} for ${row.name}: ${e.message}`);
+
+          for(let i=0;i<row.paidInstalments.length;i++){
+
+            const amt=row.paidInstalments[i];
+
+            if(amt>0){
+              await createPayment({
+                loan_id:loan.id,
+                amount:amt,
+                mpesa_receipt:'IMPORT-WK'+(i+1),
+                channel:'Cash',
+                instalment_no:i+1,
+                paid_at:new Date(
+                  addWeeks(startDate,i+1)
+                ).toISOString(),
+                recorded_by:CU.user.id
+              });
+            }
+          }
+
+          loanCount++;
+
+        }catch(e){
+          console.error('Loan import error:',e);
         }
       }
-    } // end for (row of impBuf)
+    }
 
-    // ── 8. Show results ────────────────────────────────────────────
     document.getElementById('imp-s1').classList.add('hidden');
     document.getElementById('imp-s2').classList.remove('hidden');
 
-    document.getElementById('imp-res').innerHTML = `
-      <div class="abox success">
-        ✅ Import complete!<br>
-        <b>${added}</b> new customers created &nbsp;·&nbsp;
-        ${skipCount > 0 ? `<b>${skipCount}</b> existing customers reused &nbsp;·&nbsp;` : ''}
-        <b>${loanCount}</b> loans created &nbsp;·&nbsp;
-        <b>${payCount}</b> payments recorded
+    document.getElementById('imp-res').innerHTML=
+      `<div class="abox success">
+        ✅ Imported <b>${added}</b> customers and
+        <b>${loanCount}</b> loan records into Supabase.
       </div>
-      <div class="two-col" style="margin-top:14px">
-        <div class="rmmetric"><div class="big grn">${added}</div><div class="lbl">Customers Added</div></div>
-        <div class="rmmetric"><div class="big gold">${loanCount}</div><div class="lbl">Loans Created</div></div>
-      </div>
-      ${errors.length > 0 ? `
-        <div class="abox warn" style="margin-top:12px">
-          <b>⚠ ${errors.length} non-fatal error(s):</b><br>
-          <div style="max-height:120px;overflow-y:auto;font-size:11px;margin-top:5px">
-            ${errors.map(e => `• ${e}`).join('<br>')}
-          </div>
-        </div>` : ''}`;
+      <div class="rmmetric">
+        <div class="big grn">${added}</div>
+        <div class="lbl">Customers Added to DB</div>
+      </div>`;
 
-    impBuf = [];
-    toast(`Import done — ${added} customers, ${loanCount} loans, ${payCount} payments`, 'success');
+    impBuf=[];
+    toast(`${added} customers saved to Supabase!`,'success');
 
-  } finally {
-    btn.disabled = false;
+  }finally{
+    btn.disabled=false;
     btn.classList.remove('spin-btn');
   }
 }
-
-// ───────────────────────────────────────
-// Reset the import modal
-// ───────────────────────────────────────
-function impReset() {
-  impBuf = [];
-  document.getElementById('imp-s1').classList.remove('hidden');
-  document.getElementById('imp-s2').classList.add('hidden');
-  document.getElementById('imp-prev').innerHTML = '';
-  document.getElementById('imp-acts').style.display = 'none';
-  const inp = document.getElementById('xl-inp');
-  if (inp) inp.value = '';
-}
-
-// ───────────────────────────────────────
-// Import panel renderer
-// ───────────────────────────────────────
-PANEL_RENDERERS['import'] = async function(el) {
-  el.innerHTML = `
-  <div class="sec-hd">
-    <div class="sec-title">Import <span>Loans &amp; Customers</span></div>
-  </div>
-
+function impReset(){impBuf=[];document.getElementById('imp-s1').classList.remove('hidden');document.getElementById('imp-s2').classList.add('hidden');document.getElementById('imp-prev').innerHTML='';document.getElementById('imp-acts').style.display='none';document.getElementById('xl-inp').value='';}
+PANEL_RENDERERS['import']=async function(el){
+  el.innerHTML=`
+  <div class="sec-hd"><div class="sec-title">Import <span>Customers</span></div></div>
   <div class="two-col">
-    <div class="card">
-      <div class="card-hd"><span class="card-hd-t">📊 Upload Excel / CSV</span></div>
-      <div class="card-body">
-        <div class="abox info" style="margin-bottom:12px;font-size:11px">
-          Dates are auto-detected (Excel serial or DD/MM/YYYY).<br>
-          Loan status (active / overdue / paid) is calculated automatically.<br>
-          Rows without an <b>ID No.</b> are skipped.
-        </div>
-        <div class="uz"
-          ondragover="event.preventDefault();this.classList.add('drag')"
-          ondragleave="this.classList.remove('drag')"
-          ondrop="fileDrop(event)"
-          onclick="document.getElementById('xl-panel-inp').click()">
-          <div class="uz-ico">📂</div>
-          <div class="uz-t">Click or drag your Excel file here</div>
-          <div class="uz-s">.xlsx · .xls · .csv supported</div>
-        </div>
-        <input type="file" id="xl-panel-inp" style="display:none"
-          accept=".xlsx,.xls,.csv"
-          onchange="(async()=>{const f=event.target.files[0];if(f)await processImportFile(f);})()"/>
-        <div id="imp-prev-panel" style="margin-top:11px"></div>
-        <div id="imp-acts-panel" style="display:none;margin-top:11px;justify-content:flex-end;gap:8px">
-          <button class="btn btn-out btn-sm" onclick="impReset()">✕ Clear</button>
-          <button class="btn btn-pri btn-sm" id="imp-panel-btn" onclick="doImport()">Import</button>
-        </div>
+    <div class="card"><div class="card-hd"><span class="card-hd-t">Upload Excel / CSV</span></div><div class="card-body">
+      <div class="uz" ondragover="event.preventDefault();this.classList.add('drag')" ondragleave="this.classList.remove('drag')" ondrop="fileDrop(event)" onclick="document.getElementById('xl-panel-inp').click()">
+        <div class="uz-ico">📊</div><div class="uz-t">Click or drag your Excel file</div><div class="uz-s">.xlsx · .xls · .csv</div>
       </div>
-    </div>
-
-    <div class="card">
-      <div class="card-hd"><span class="card-hd-t">Column Reference</span></div>
-      <div class="card-body">
-        <div class="abox info" style="margin-bottom:10px;font-size:11px">
-          Headers are matched flexibly (case-insensitive, partial match).
-          Supported column names from your sheet:
-        </div>
-        ${[
-          ['ID No.',        'ID number — rows without this are skipped'],
-          ['Name',          'Customer full name'],
-          ['Phone',         'Mobile / M-Pesa number'],
-          ['Business',      'Business type or name'],
-          ['BS Location',   'Business location'],
-          ['Residency',     'Residence / estate'],
-          ['Loan Amount',   'Principal disbursed'],
-          ['Instlmnt Amt',  'Weekly instalment amount (from sheet)'],
-          ['No Weeks',      'Number of weekly instalments'],
-          ['Loan Date',     'Start date (DD/MM/YYYY or Excel serial)'],
-          ['Day',           'Collection day (Mon/Tue…)'],
-          ['Guarantor Name','Guarantor full name'],
-          ['Guarantor No.', 'Guarantor phone'],
-          ['Wk1 Instlmnt … Wk6 Instlmnt', 'Weekly payment amounts (blank = unpaid)'],
-        ].map(([col, desc]) => `
-          <div style="display:flex;gap:8px;font-size:11px;margin-bottom:5px;align-items:flex-start">
-            <span style="min-width:130px;font-weight:600;color:var(--gold2);font-family:'JetBrains Mono',monospace;font-size:10px">${col}</span>
-            <span class="muted">${desc}</span>
-          </div>`).join('')}
-        <div class="abox warn" style="margin-top:10px;font-size:11px">
-          <b>Overdue logic:</b> a week is overdue when its due date
-          (start date + N×7 days) has passed and no payment was recorded for it.
-          "Cleared" text anywhere in the row marks the loan as fully paid.
-        </div>
-      </div>
-    </div>
+      <input type="file" id="xl-panel-inp" style="display:none" accept=".xlsx,.xls,.csv" onchange="(async()=>{const f=event.target.files[0];if(f)await processImportFile(f);})()"/>
+      <div id="imp-prev-panel" style="margin-top:11px"></div>
+      <div id="imp-acts-panel" style="display:none;margin-top:11px;justify-content:flex-end;gap:8px"><button class="btn btn-out btn-sm" onclick="inlineReset()">✕ Clear</button><button class="btn btn-pri btn-sm" id="imp-panel-btn" onclick="doImport()">Import</button></div>
+    </div></div>
+    <div class="card"><div class="card-hd"><span class="card-hd-t">Column Reference</span></div><div class="card-body">
+      <div class="abox info" style="margin-bottom:10px">Your Excel headers are matched flexibly. Supported names:</div>
+      ${Object.entries(COL_ALIASES).map(([k,v])=>`<div style="display:flex;gap:7px;font-size:11px;margin-bottom:5px;align-items:center"><span style="width:70px;font-weight:600;color:var(--gold2)">${k}</span><span class="muted">${v.slice(0,3).join(', ')}</span></div>`).join('')}
+    </div></div>
   </div>`;
 };
-
 
 // ═══════════════════════════════════════
 // SMS FUNCTIONS
