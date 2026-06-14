@@ -438,6 +438,26 @@ body{font-family:'Outfit',sans-serif;background:var(--ink);color:var(--text);min
 .cust-loan-card.paid::before{background:var(--grn2);}
 .cust-loan-card.overdue::before{background:var(--ruby2);}
 
+.mobile-overlay{
+  display:none;
+}
+
+@media (max-width:768px){
+
+  .mobile-overlay{
+    display:none;
+    position:fixed;
+    inset:0;
+    background:rgba(0,0,0,.6);
+    z-index:999;
+  }
+
+  .mobile-overlay.show{
+    display:block;
+  }
+
+}
+
 @media (max-width: 768px){
 
   .mobile-menu-btn{
@@ -450,13 +470,20 @@ body{font-family:'Outfit',sans-serif;background:var(--ink);color:var(--text);min
     flex-direction:column;
   }
 
-  .sidebar{
-    width:100%;
-    min-width:100%;
-    height:auto;
-    position:relative;
-  }
+.sidebar{
+  position:fixed;
+  top:0;
+  left:-260px;
+  width:260px;
+  min-width:260px;
+  height:100vh;
+  z-index:1000;
+  transition:left .3s ease;
+}
 
+.sidebar.open{
+  left:0;
+}
   .two-col,
   .three-col,
   .f2,
@@ -584,6 +611,7 @@ body{font-family:'Outfit',sans-serif;background:var(--ink);color:var(--text);min
 
 <!-- APP -->
 <div class="screen" id="screen-app">
+  <div id="mobile-overlay" class="mobile-overlay"></div>
   <div class="app-shell">
     <aside class="sidebar">
       <div class="sb-brand"><div class="name">ALLYSE</div><div class="sub">Investments</div></div>
@@ -2247,6 +2275,37 @@ window.addEventListener('load',async()=>{
     },500);
   },2200);
 });
+
+document.addEventListener("DOMContentLoaded", () => {
+
+  const menuBtn = document.getElementById("mobile-menu-btn");
+  const sidebar = document.querySelector(".sidebar");
+  const overlay = document.getElementById("mobile-overlay");
+
+  if(menuBtn){
+
+    menuBtn.addEventListener("click", () => {
+
+      sidebar.classList.toggle("open");
+      overlay.classList.toggle("show");
+
+    });
+
+  }
+
+  if(overlay){
+
+    overlay.addEventListener("click", () => {
+
+      sidebar.classList.remove("open");
+      overlay.classList.remove("show");
+
+    });
+
+  }
+
+});
+
 </script>
 </body>
 </html>
