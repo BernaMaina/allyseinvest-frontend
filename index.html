@@ -1780,22 +1780,107 @@ async function savePayment(){
 // ═══════════════════════════════════════
 // IMPORT
 // ═══════════════════════════════════════
-const COL_ALIASES={nid:['id no','id no.','id number','national id','nid'],name:['name','full name','fullname','customer name'],phone:['phone','mobile','tel','telephone','mpesa'],biz:['business','business name','biz'],bsloc:['bs location','business location','bslocation','location'],res:['residency','residence','estate'],p:['amount','principal','loan amount'],w:['instlmnts','instalments','installments','weeks','terms'],start:['loan date','date','loandate'],day:['day','collection day','payment day'],gname:['guarantor name','guarantor'],gphone:['guarantor no','guarantor no.','guarantor phone'],i1:['instlmnt1','instalment1'],i2:['instlmnt2','instalment2'],i3:['instlmnt3','instalment3'],i4:['instlmnt4','instalment4'],i5:['instalmnt5','instalment5'],i6:['instlmnt6','instalment6']};
+const COL_ALIASES={
+  nid:['id no','id no.','id number','national id','nid'],
+  name:['name','full name','fullname','customer name'],
+  phone:['phone','mobile','tel','telephone','mpesa','phone no'],
+  biz:['business','business name','biz','business type'],
+  bsloc:['bs location','business location','bslocation','location'],
+  res:['residency','residence','estate'],
+  p:['loan amount','amount','principal'],
+  instamt:['instlmnt amt','instalment amt','installment amt','instlmnt amount','weekly instalment','weekly installment','instlmnt amt'],
+  w:['no weeks','no. weeks','instlmnts','instalments','installments','weeks','terms'],
+  start:['loan date','date','loandate'],
+  day:['day','collection day','payment day'],
+  gname:['guarantor name','guarantor'],
+  gphone:['guarantor no','guarantor no.','guarantor phone'],
+  i1:['wk1 instlmnt','wk1 instalment','wk1','instlmnt1','instalment1'],
+  i2:['wk2 instlmnt','wk2 instalment','wk2','instlmnt2','instalment2'],
+  i3:['wk3 instlmnt','wk3 instalment','wk3','instlmnt3','instalment3'],
+  i4:['wk4 instlmnt','wk4 instalment','wk4','instlmnt4','instalment4'],
+  i5:['wk5 instalmnt','wk5 instalment','wk5','instalmnt5','instalment5'],
+  i6:['wk6 instlmnt','wk6 instalment','wk6','instlmnt6','instalment6'],
+};
 function normKey(s){return(s||'').toString().toLowerCase().trim().replace(/[^a-z0-9 .]/g,'').replace(/\s+/g,' ');}
 function mapHeaders(headers){const map={};headers.forEach((h,i)=>{const nk=normKey(h);for(const[field,aliases]of Object.entries(COL_ALIASES)){if(!map[field]&&aliases.some(a=>nk===a||nk.includes(a)||a.includes(nk)))map[field]=i;}});return map;}
 let impBuf=[];
-function parseExcelFile(file){return new Promise((res,rej)=>{const r=new FileReader();r.onload=e=>{try{const wb=XLSX.read(e.target.result,{type:'array'}),ws=wb.Sheets[wb.SheetNames[0]],rows=XLSX.utils.sheet_to_json(ws,{header:1,defval:''});if(!rows.length){rej('Empty file');return;}const headers=rows[0].map(h=>(h||'').toString()),hm=mapHeaders(headers),parsed=[];for(let i=1;i<rows.length;i++){const row=rows[i];if(!row.length||row.every(c=>!c))continue;const g=f=>hm[f]!==undefined?(row[hm[f]]||'').toString().trim():'',gn=f=>parseFloat(g(f))||0,inst=[];['i1','i2','i3','i4','i5','i6'].forEach(k=>{const v=gn(k);if(v>0)inst.push(v);});parsed.push({nid:g('nid'),name:g('name'),phone:g('phone'),biz:g('biz'),bsloc:g('bsloc'),res:g('res'),p:gn('p'),w:parseInt(g('w'))||0,start:g('start'),day:g('day'),gname:g('gname'),gphone:g('gphone'),instalments:inst});}res(parsed);}catch(e){rej('Parse error: '+e.message);}};r.onerror=()=>rej('Read failed');r.readAsArrayBuffer(file);});}
+function parseFlexDate(raw){
+  if(raw===null||raw===undefined||raw==='')return'';
+  const s=raw.toString().trim();
+  // Excel serial number (e.g. 46331.0)
+  const num=parseFloat(s);
+  if(!isNaN(num)&&num>40000&&num<60000){
+    const d=new Date(Math.round((num-25569)*86400*1000));
+    return d.toISOString().slice(0,10);
+  }
+  // Fix double or triple slashes: "27//5//2026" → "27/5/2026"
+  const cleaned=s.replace(/\/+/g,'/');
+  // DD/MM/YYYY or D/M/YYYY
+  const dmy=cleaned.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if(dmy)return`${dmy[3]}-${dmy[2].padStart(2,'0')}-${dmy[1].padStart(2,'0')}`;
+  // Already ISO YYYY-MM-DD
+  if(/^\d{4}-\d{2}-\d{2}$/.test(cleaned))return cleaned;
+  return'';
+}
+function parseExcelFile(file){return new Promise((res,rej)=>{const r=new FileReader();r.onload=e=>{try{
+  const wb=XLSX.read(e.target.result,{type:'array'}),ws=wb.Sheets[wb.SheetNames[0]],rows=XLSX.utils.sheet_to_json(ws,{header:1,defval:''});
+  if(!rows.length){rej('Empty file');return;}
+  const headers=rows[0].map(h=>(h||'').toString()),hm=mapHeaders(headers),parsed=[];
+  for(let i=1;i<rows.length;i++){
+    const row=rows[i];
+    if(!row.length||row.every(c=>!c))continue;
+    const g=f=>hm[f]!==undefined?(row[hm[f]]===null||row[hm[f]]===undefined?'':row[hm[f]].toString().trim()):'';
+    const gn=f=>parseFloat(g(f))||0;
+    const rawNid=g('nid');
+    // Skip rows with no ID number
+    if(!rawNid||rawNid==='0')continue;
+    const numWeeks=parseInt(g('w'))||0;
+    const principal=gn('p');
+    // instamt from Excel column "Instlmnt Amt" — the actual weekly amount charged
+    const instamt=gn('instamt');
+    const startDate=parseFlexDate(hm['start']!==undefined?row[hm['start']]:'');
+    // Read each weekly instalment cell
+    // blank/empty = not yet paid (stop reading further weeks)
+    // a number = amount paid that week (may be partial if less than instamt)
+    // "cleared" text = loan fully settled at this point
+    const paidInstalments=[];
+    let allCleared=false;
+    const wkKeys=['i1','i2','i3','i4','i5','i6'];
+    for(let k=0;k<wkKeys.length;k++){
+      const idx=hm[wkKeys[k]];
+      if(idx===undefined)break;
+      const cell=row[idx];
+      const cellStr=(cell===null||cell===undefined)?'':cell.toString().trim().toLowerCase();
+      if(cellStr===''||cell===null||cell===undefined){break;} // blank = unpaid, stop
+      if(cellStr==='cleared'){allCleared=true;break;}
+      const amt=parseFloat(cellStr)||0;
+      if(amt>0)paidInstalments.push(amt);
+    }
+    const paidCount=allCleared?numWeeks:paidInstalments.length;
+    // Determine loan status
+    let loanStatus='active';
+    if(paidCount>=numWeeks&&numWeeks>0){
+      loanStatus='paid';
+    } else if(startDate){
+      // next payment was due paidCount weeks after start; if >7 days ago → overdue
+      const nextDueMs=new Date(startDate).getTime()+(paidCount+1)*7*86400000;
+      if(Date.now()>nextDueMs){loanStatus='overdue';}
+    }
+    parsed.push({nid:rawNid,name:g('name'),phone:g('phone'),biz:g('biz'),bsloc:g('bsloc'),res:g('res'),p:principal,instamt,w:numWeeks,start:startDate,day:g('day'),gname:g('gname'),gphone:g('gphone'),paidInstalments,allCleared,paidCount,loanStatus});
+  }
+  res(parsed);
+}catch(e){rej('Parse error: '+e.message);}};r.onerror=()=>rej('Read failed');r.readAsArrayBuffer(file);});}
 async function fileSelect(e){const f=e.target.files[0];if(f)await processImportFile(f);}
 async function fileDrop(e){e.preventDefault();const f=e.dataTransfer.files[0];if(f)await processImportFile(f);}
 async function processImportFile(file){
   const prev=document.getElementById('imp-prev'),acts=document.getElementById('imp-acts');
   prev.innerHTML='<div class="ai-load" style="padding:14px">Parsing file…</div>';acts.style.display='none';impBuf=[];
   try{const rows=await parseExcelFile(file),existing=await getCustomers(),existPhones=new Set(existing.map(c=>c.phone));let ok=0,warn=0,err=0;
-  const validated=rows.map(row=>{if(!row.name)return{...row,_s:'err',_m:'Missing name'};if(!row.phone)return{...row,_s:'err',_m:'Missing phone'};if(existPhones.has(row.phone))return{...row,_s:'warn',_m:'Phone exists in DB'};return{...row,_s:'ok',_m:'Ready'};});
+  const validated=rows.map(row=>{if(!row.name)return{...row,_s:'err',_m:'Missing name'};if(!row.phone)return{...row,_s:'err',_m:'Missing phone'};if(existPhones.has(row.phone))return{...row,_s:'warn',_m:'Phone exists in DB (will skip loan)'};return{...row,_s:'ok',_m:`Ready · ${row.paidCount}/${row.w} wks paid · ${row.loanStatus}`};});
   validated.forEach(r=>{if(r._s==='ok'){ok++;impBuf.push(r);}else if(r._s==='warn')warn++;else err++;});
   let html=`<div class="abox ${ok>0?'success':'danger'}" style="margin-top:12px">Found <b>${rows.length}</b> rows · <b style="color:var(--grn3)">${ok}</b> ready · <b style="color:var(--gold2)">${warn}</b> duplicates · <b style="color:var(--ruby3)">${err}</b> errors</div>`;
   html+=`<div style="max-height:240px;overflow-y:auto;margin-top:8px">`;
-  validated.slice(0,15).forEach(row=>{html+=`<div class="ir ${row._s}"><div class="ir-s">${row._s==='ok'?'✓':row._s==='warn'?'!':'✗'}</div><b>${row.name||'—'}</b><span class="muted" style="margin-left:8px">${row.phone}</span><span class="muted" style="margin-left:8px">${row.biz||''}</span>${row.p?`<span class="mono gold" style="margin-left:auto">KES ${kshS(row.p)}</span>`:''}<span style="font-size:9px;margin-left:8px;color:${row._s==='ok'?'var(--grn3)':row._s==='warn'?'var(--gold2)':'var(--ruby3)'}">${row._m}</span></div>`;});
+  validated.slice(0,20).forEach(row=>{const sc=row._s==='ok'?'var(--grn3)':row._s==='warn'?'var(--gold2)':'var(--ruby3)';html+=`<div class="ir ${row._s}"><div class="ir-s">${row._s==='ok'?'✓':row._s==='warn'?'!':'✗'}</div><b>${row.name||'—'}</b><span class="muted" style="margin-left:8px">${row.phone}</span><span class="muted" style="margin-left:8px">${row.biz||''}</span>${row.p?`<span class="mono gold" style="margin-left:auto">KES ${kshS(row.p)}</span>`:''}<span style="font-size:9px;margin-left:8px;color:${sc}">${row._m}</span></div>`;});
   if(rows.length>15)html+=`<div style="text-align:center;padding:6px;font-size:10px;color:var(--text3)">… and ${rows.length-15} more</div>`;
   html+='</div>';prev.innerHTML=html;if(ok>0){acts.style.display='flex';document.getElementById('imp-btn').textContent=`Import ${ok} Customer${ok!==1?'s':''}`;}}
   catch(e){prev.innerHTML=`<div class="abox danger" style="margin-top:12px">❌ ${e}</div>`;}
@@ -1804,7 +1889,13 @@ async function doImport(){
   if(!impBuf.length)return;
   const btn=document.getElementById('imp-btn');btn.disabled=true;btn.classList.add('spin-btn');
   let added=0,loanCount=0;
-  try{for(const row of impBuf){const custPayload={full_name:row.name,phone:row.phone,national_id:row.nid||null,business_name:row.biz||null,residence:row.res||null,mpesa_number:row.phone,assigned_agent:CU.user.id,status:'active'};let cust;try{cust=await createCustomer(custPayload);added++;}catch(e){continue;}if(row.p>0&&row.w>0&&cust){const r=gRate(row.p),tot=totalFor(row.p,row.w),wk=weeklyFor(row.p,row.w),paidCount=row.instalments.filter(v=>v>0).length;try{const lnum=await genLoanNumber(),loan=await createLoan({loan_number:lnum,customer_id:cust.id,issued_by:CU.user.id,principal:row.p,interest:r.i[row.w],total_repayable:tot,instalments:row.w,paid_count:paidCount,start_date:row.start||today(),due_date:addWeeks(row.start||today(),row.w),collection_day:row.day||'Monday',purpose:'Business',registration_fee:300,processing_fee:r.pf,weekly_instalment:wk,status:paidCount>=row.w?'paid':'active'});for(let i=0;i<row.instalments.length;i++){if(row.instalments[i]>0){await createPayment({loan_id:loan.id,amount:row.instalments[i],mpesa_receipt:'IMPORT-'+(i+1),channel:'M-Pesa Mobile',instalment_no:i+1,paid_at:new Date(addWeeks(row.start||today(),i+1)).toISOString(),recorded_by:CU.user.id});}}loanCount++;}catch(e){}}}
+  try{for(const row of impBuf){const custPayload={full_name:row.name,phone:row.phone,national_id:row.nid||null,business_name:row.biz||null,residence:row.res||null,mpesa_number:row.phone,assigned_agent:CU.user.id,status:'active'};let cust;try{cust=await createCustomer(custPayload);added++;}catch(e){continue;}if(row.p>0&&row.w>0&&cust){const rc=gRate(row.p);const startDate=row.start||today();
+    // Use the weekly instalment amount from the Excel "Instlmnt Amt" column; fall back to rate-card calculation
+    const wk=row.instamt>0?row.instamt:weeklyFor(row.p,row.w);
+    const tot=wk*row.w;
+    try{const lnum=await genLoanNumber(),loan=await createLoan({loan_number:lnum,customer_id:cust.id,issued_by:CU.user.id,principal:row.p,interest:rc.i[row.w]||0,total_repayable:tot,instalments:row.w,paid_count:row.paidCount,start_date:startDate,due_date:addWeeks(startDate,row.w),collection_day:row.day||'Monday',purpose:'Business / Working Capital',registration_fee:300,processing_fee:rc.pf||0,weekly_instalment:wk,status:row.loanStatus});
+    // Record each paid instalment as a payment entry
+    for(let i=0;i<row.paidInstalments.length;i++){const amt=row.paidInstalments[i];if(amt>0){await createPayment({loan_id:loan.id,amount:amt,mpesa_receipt:'IMPORT-WK'+(i+1),channel:'Cash',instalment_no:i+1,paid_at:new Date(addWeeks(startDate,i+1)).toISOString(),recorded_by:CU.user.id});}}loanCount++;}catch(e){console.error('Loan import error:',e);}}}
   document.getElementById('imp-s1').classList.add('hidden');document.getElementById('imp-s2').classList.remove('hidden');
   document.getElementById('imp-res').innerHTML=`<div class="abox success">✅ Imported <b>${added}</b> customers and <b>${loanCount}</b> loan records into Supabase.</div><div class="rmmetric"><div class="big grn">${added}</div><div class="lbl">Customers Added to DB</div></div>`;
   impBuf=[];toast(`${added} customers saved to Supabase!`,'success');}
