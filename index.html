@@ -1048,7 +1048,10 @@ async function getAllPayments(){const{data,error}=await SB.from('payments').sele
 async function createPayment(payment){const{data,error}=await SB.from('payments').insert([payment]).select().single();if(error)throw error;return data;}
 async function getApplications(){const{data,error}=await SB.from('loan_applications').select('*').order('created_at',{ascending:false});if(error){console.error(error);return[];}return data||[];}
 async function getProfiles(){const{data,error}=await SB.from('profiles').select('*').order('full_name');if(error){console.error(error);return[];}return data||[];}
-async function genLoanNumber(){const{count}=await SB.from('loans').select('*',{count:'exact',head:true});return'LN'+String((count||0)+1).padStart(4,'0');}
+async function genLoanNumber(){
+  const{count}=await SB.from('loans').select('*',{count:'exact',head:true});
+  return'LN'+String((count||0)+1).padStart(4,'0');
+}
 
 // ═══════════════════════════════════════
 // UTILS
