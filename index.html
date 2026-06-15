@@ -694,7 +694,7 @@ body{font-family:'Outfit',sans-serif;background:var(--ink);color:var(--text);min
     </div>
     <div id="lprev" class="sbox hidden" style="margin-top:12px">
       <div class="sr"><span class="muted">Principal</span><span id="lp-p">—</span></div>
-      <div class="sr"><span class="muted">Registration Fee</span><span>KES 300</span></div>
+      <div class="sr"><span class="muted">Registration Fee</span><span>KES 200</span></div>
       <div class="sr"><span class="muted">Processing Fee</span><span id="lp-pf">—</span></div>
       <div class="sr"><span class="muted">Total Interest</span><span id="lp-i">—</span></div>
       <div class="sr"><span class="muted">Total to Repay</span><span id="lp-t">—</span></div>
@@ -1485,7 +1485,7 @@ function genAmort(){
   if(!p||!w)return;
   const r=gRate(p),wk=weeklyFor(p,w),tot=totalFor(p,w),int=r.i[w],pPer=p/w,iPer=int/w;
   const sc=document.getElementById('at-sum'),sb=document.getElementById('at-sumb');
-  if(sc){sc.classList.remove('hidden');sb.innerHTML=`<div class="sbox"><div class="sr"><span class="muted">Principal</span><span>${ksh(p)}</span></div><div class="sr"><span class="muted">Reg Fee</span><span>KES 300</span></div><div class="sr"><span class="muted">Processing Fee</span><span>${ksh(r.pf)}</span></div><div class="sr"><span class="muted">Total Interest</span><span>${ksh(int)}</span></div><div class="sr"><span class="muted">Total Repayable</span><span>${ksh(tot)}</span></div><div class="sr"><span>Weekly</span><span>${ksh(wk)}</span></div></div>`;}
+  if(sc){sc.classList.remove('hidden');sb.innerHTML=`<div class="sbox"><div class="sr"><span class="muted">Principal</span><span>${ksh(p)}</span></div><div class="sr"><span class="muted">Reg Fee</span><span>KES 200</span></div><div class="sr"><span class="muted">Processing Fee</span><span>${ksh(r.pf)}</span></div><div class="sr"><span class="muted">Total Interest</span><span>${ksh(int)}</span></div><div class="sr"><span class="muted">Total Repayable</span><span>${ksh(tot)}</span></div><div class="sr"><span>Weekly</span><span>${ksh(wk)}</span></div></div>`;}
   const tc=document.getElementById('at-tcard'),tbody=document.getElementById('at-tbody'),tfoot=document.getElementById('at-tfoot');
   if(!tc||!tbody||!tfoot)return;
   tc.classList.remove('hidden');
@@ -1559,18 +1559,82 @@ PANEL_RENDERERS['reports']=async function(el){
 // ═══════════════════════════════════════
 PANEL_RENDERERS['analytics']=async function(el){
   el.innerHTML=loading();
-  const loans=await getLoans();
+  const [loans,payments]=await Promise.all([getLoans(),SB.from('payments').select('*,loans(loan_number,registration_fee,processing_fee,weekly_instalment,interest,principal,start_date,customers(full_name))').order('paid_at').then(r=>r.data||[])]);
   const byW={4:0,6:0,8:0,10:0,12:0};
   loans.forEach(l=>{if(byW[l.instalments]!==undefined)byW[l.instalments]++;});
   const mx=Math.max(...Object.values(byW),1);
+  const totalDisbursed=loans.reduce((s,l)=>s+Number(l.principal),0);
+  const totalCollected=payments.reduce((s,p)=>s+Number(p.amount),0);
+  const totalInterest=loans.reduce((s,l)=>s+Number(l.interest||0),0);
+  const totalFees=loans.reduce((s,l)=>s+Number(l.registration_fee||0)+Number(l.processing_fee||0),0);
+
+  // ── Monthly profit buckets ──────────────────────────────
+  // First period: 11 May 2026 – 31 May 2026 (Month 0 = "May 11–31")
+  // Then normal calendar months from 1 June onwards
+  const FIRST_DATE=new Date('2026-05-11');
+  const FIRST_MONTH_END=new Date('2026-05-31T23:59:59');
+  function getMonthBucket(dateStr){
+    const d=new Date(dateStr);
+    if(d>=FIRST_DATE&&d<=FIRST_MONTH_END)return 'May 11–31, 2026';
+    const yr=d.getFullYear(),mo=d.getMonth();
+    return new Date(yr,mo,1).toLocaleDateString('en-KE',{month:'long',year:'numeric'});
+  }
+  const monthMap={};
+  // Tally loan disbursements by month (use start_date)
+  loans.forEach(l=>{
+    const bk=getMonthBucket(l.start_date||new Date().toISOString().slice(0,10));
+    if(!monthMap[bk])monthMap[bk]={loans:0,disbursed:0,collected:0,interest:0,fees:0,cleared:0,overdue:0};
+    monthMap[bk].loans++;
+    monthMap[bk].disbursed+=Number(l.principal||0);
+    monthMap[bk].interest+=Number(l.interest||0);
+    monthMap[bk].fees+=Number(l.registration_fee||0)+Number(l.processing_fee||0);
+    if(l.status==='paid')monthMap[bk].cleared++;
+    if(l.status==='overdue')monthMap[bk].overdue++;
+  });
+  // Tally actual payments by month (use paid_at)
+  payments.forEach(p=>{
+    const bk=getMonthBucket(p.paid_at||new Date().toISOString().slice(0,10));
+    if(!monthMap[bk])monthMap[bk]={loans:0,disbursed:0,collected:0,interest:0,fees:0,cleared:0,overdue:0};
+    monthMap[bk].collected+=Number(p.amount||0);
+  });
+  // Sort months chronologically
+  const monthOrder=['May 11–31, 2026'];
+  const otherMonths=Object.keys(monthMap).filter(k=>k!=='May 11–31, 2026').sort((a,b)=>new Date(a)-new Date(b));
+  const sortedMonths=[...monthOrder.filter(k=>monthMap[k]),...otherMonths];
+  const monthRows=sortedMonths.map(m=>{
+    const d=monthMap[m];
+    const profit=d.collected;// profit = money actually collected (principal repayments + interest embedded)
+    const expectedTotal=d.disbursed+(d.interest+d.fees);// what should be repaid
+    return`<tr>
+      <td><b>${m}</b></td>
+      <td class="mono gold">${ksh(d.disbursed)}</td>
+      <td class="mono grn">${ksh(d.collected)}</td>
+      <td class="mono" style="color:var(--sap3)">${ksh(d.fees)}</td>
+      <td>${d.loans}</td>
+      <td><span class="bdg b-paid" style="font-size:9px">${d.cleared} cleared</span>&nbsp;<span class="bdg b-ov" style="font-size:9px">${d.overdue} overdue</span></td>
+    </tr>`;
+  }).join('');
+
   el.innerHTML=`
   <div class="sg">
     <div class="sc"><div class="sc-lbl">Total Loans</div><div class="sc-val">${loans.length}</div></div>
     <div class="sc gn"><div class="sc-lbl">Active</div><div class="sc-val">${loans.filter(l=>l.status==='active').length}</div></div>
     <div class="sc ru"><div class="sc-lbl">Overdue</div><div class="sc-val">${loans.filter(l=>l.status==='overdue').length}</div></div>
     <div class="sc sa"><div class="sc-lbl">Paid Off</div><div class="sc-val">${loans.filter(l=>l.status==='paid').length}</div></div>
-    <div class="sc"><div class="sc-lbl">Avg Loan Size</div><div class="sc-val" style="font-size:17px">${ksh(loans.length?loans.reduce((s,l)=>s+Number(l.principal),0)/loans.length:0)}</div></div>
+    <div class="sc"><div class="sc-lbl">Avg Loan Size</div><div class="sc-val" style="font-size:17px">${ksh(loans.length?totalDisbursed/loans.length:0)}</div></div>
   </div>
+  <div class="sg">
+    <div class="sc"><div class="sc-lbl">Total Disbursed</div><div class="sc-val" style="font-size:17px">${ksh(totalDisbursed)}</div><div class="sc-sub">Loan principal issued</div></div>
+    <div class="sc gn"><div class="sc-lbl">Total Collected</div><div class="sc-val" style="font-size:17px">${ksh(totalCollected)}</div><div class="sc-sub">All payments received</div></div>
+    <div class="sc sa"><div class="sc-lbl">Fees & Interest</div><div class="sc-val" style="font-size:17px">${ksh(totalFees)}</div><div class="sc-sub">Registration + processing</div></div>
+    <div class="sc"><div class="sc-lbl">Net Outstanding</div><div class="sc-val" style="font-size:17px">${ksh(Math.max(0,totalDisbursed-totalCollected))}</div><div class="sc-sub">Yet to be recovered</div></div>
+  </div>
+  <div class="card"><div class="card-hd"><span class="card-hd-t">📅 Monthly Breakdown</span><span style="font-size:10px;color:var(--text3)">Loans issued & payments collected by period</span></div><div class="card-body">
+    <div class="tw"><table class="dtbl">
+      <thead><tr><th>Period</th><th>Disbursed</th><th>Collected</th><th>Fees</th><th>Loans</th><th>Status</th></tr></thead>
+      <tbody>${monthRows||'<tr><td colspan="6" style="text-align:center;color:var(--text3)">No data yet</td></tr>'}</tbody>
+    </table></div>
+  </div></div>
   <div class="card"><div class="card-hd"><span class="card-hd-t">Loans by Term</span></div><div class="card-body">
     <div style="display:flex;align-items:flex-end;gap:9px;height:100px">
       ${Object.entries(byW).map(([t,v])=>`<div class="cbar-w"><div class="cbar-v">${v}</div><div class="cbar-b" style="height:${(v/mx)*80}px"></div><div class="cbar-l">${t} wks</div></div>`).join('')}
@@ -1729,7 +1793,7 @@ async function saveLoan(){
   btn.disabled=true;btn.classList.add('spin-btn');
   try{
     const loanNum=await genLoanNumber();
-    await createLoan({loan_number:loanNum,customer_id:cid,issued_by:CU.user.id,principal:p,interest:r.i[w],total_repayable:tot,instalments:w,paid_count:0,start_date:d,due_date:addWeeks(d,w),collection_day:document.getElementById('ml-day').value,purpose:document.getElementById('ml-purpose').value,registration_fee:300,processing_fee:r.pf,weekly_instalment:wk,status:'active'});
+    await createLoan({loan_number:loanNum,customer_id:cid,issued_by:CU.user.id,principal:p,interest:r.i[w],total_repayable:tot,instalments:w,paid_count:0,start_date:d,due_date:addWeeks(d,w),collection_day:document.getElementById('ml-day').value,purpose:document.getElementById('ml-purpose').value,registration_fee:200,processing_fee:r.pf,weekly_instalment:wk,status:'active'});
     closeModal('m-loan');toast(`Loan ${loanNum} issued — ${ksh(p)} disbursed!`,'success');
     if(STATE.panel==='loans'||STATE.panel==='dash')showPanel(STATE.panel);
   }catch(e){errEl.textContent=e.message;errEl.classList.remove('hidden');}
@@ -1780,143 +1844,272 @@ async function savePayment(){
 // ═══════════════════════════════════════
 // IMPORT
 // ═══════════════════════════════════════
-const COL_ALIASES={nid:['id no','id no.','id number','national id','nid'],name:['name','full name','fullname','customer name'],phone:['phone','mobile','tel','telephone','mpesa'],biz:['business','business name','biz'],bsloc:['bs location','business location','bslocation','location'],res:['residency','residence','estate'],p:['amount','principal','loan amount'],w:['instlmnts','instalments','installments','weeks','terms'],start:['loan date','date','loandate'],day:['day','collection day','payment day'],gname:['guarantor name','guarantor'],gphone:['guarantor no','guarantor no.','guarantor phone'],i1:['instlmnt1','instalment1'],i2:['instlmnt2','instalment2'],i3:['instlmnt3','instalment3'],i4:['instlmnt4','instalment4'],i5:['instalmnt5','instalment5'],i6:['instlmnt6','instalment6']};
+// ─── COLUMN ALIASES ───────────────────────────────────────────
+const COL_ALIASES={
+  nid:['id no','id no.','id number','national id','nid'],
+  name:['name','full name','fullname','customer name'],
+  phone:['phone','mobile','tel','telephone','mpesa'],
+  biz:['business','business name','biz'],
+  bsloc:['bs location','business location','bslocation','location'],
+  res:['residency','residence','estate'],
+  p:['amount','principal','loan amount'],
+  instamt:['instlmnt amt','instalment amt','installment amt','weekly amt','inst amt'],
+  w:['no weeks','no. weeks','instlmnts','instalments','installments','weeks','terms'],
+  start:['loan date','date','loandate'],
+  day:['day','collection day','payment day'],
+  gname:['guarantor name','guarantor'],
+  gphone:['guarantor no','guarantor no.','guarantor phone'],
+  i1:['wk1 instlmnt','wk1 instalment','wk1','instlmnt1','instalment1'],
+  i2:['wk2 instlmnt','wk2 instalment','wk2','instlmnt2','instalment2'],
+  i3:['wk3 instlmnt','wk3 instalment','wk3','instlmnt3','instalment3'],
+  i4:['wk4 instlmnt','wk4 instalment','wk4','instlmnt4','instalment4'],
+  i5:['wk5 instalmnt','wk5 instalment','wk5','instalmnt5','instalment5'],
+  i6:['wk6 instlmnt','wk6 instalment','wk6','instlmnt6','instalment6'],
+  i7:['wk7 instlmnt','wk7 instalment','wk7','instlmnt7','instalment7'],
+  i8:['wk8 instlmnt','wk8 instalment','wk8','instlmnt8','instalment8']
+};
 function normKey(s){return(s||'').toString().toLowerCase().trim().replace(/[^a-z0-9 .]/g,'').replace(/\s+/g,' ');}
-function mapHeaders(headers){const map={};headers.forEach((h,i)=>{const nk=normKey(h);for(const[field,aliases]of Object.entries(COL_ALIASES)){if(!map[field]&&aliases.some(a=>nk===a||nk.includes(a)||a.includes(nk)))map[field]=i;}});return map;}
+function mapHeaders(headers){
+  const map={};
+  headers.forEach((h,i)=>{
+    const nk=normKey(h);
+    for(const[field,aliases]of Object.entries(COL_ALIASES)){
+      if(!map[field]&&aliases.some(a=>nk===a||nk.includes(a)||a.includes(nk)))map[field]=i;
+    }
+  });
+  return map;
+}
+
+// ─── PARSE EXCEL DATE (handles DD/MM/YYYY, Excel serial, ISO) ─
+function parseImportDate(val){
+  if(!val&&val!==0)return null;
+  const s=val.toString().trim();
+  if(/^\d{4,5}$/.test(s)){
+    const d=new Date((parseInt(s)-25569)*86400000);
+    if(!isNaN(d.getTime()))return d.toISOString().slice(0,10);
+  }
+  const parts=s.replace(/\/+/g,'/').split('/');
+  if(parts.length===3){
+    const day=parseInt(parts[0]),mon=parseInt(parts[1]),yr=parseInt(parts[2]);
+    if(yr>2000&&mon>=1&&mon<=12&&day>=1&&day<=31)
+      return yr+'-'+String(mon).padStart(2,'0')+'-'+String(day).padStart(2,'0');
+  }
+  if(/^\d{4}-\d{2}-\d{2}/.test(s))return s.slice(0,10);
+  return null;
+}
+
+// ─── COMPUTE INSTALLMENT STATUS ───────────────────────────────
+// Derives paid count, overdue weeks, cleared status from raw excel values
+function computeLoanStatus(row, todayStr){
+  const wkAmt=row.instamt;
+  const numWeeks=row.w;
+  const startDateStr=row.start;
+  const wkVals=row.rawInstalments;
+  if(!startDateStr||!wkAmt||!numWeeks){
+    return{paidInstalments:[],paidCount:0,loanStatus:'active',overdueCount:0,overdueAmt:0,notStarted:true,cleared:false};
+  }
+  const startDate=new Date(startDateStr);
+  const todayDate=new Date(todayStr);
+  const paidInstalments=[];
+  let paidCount=0,overdueCount=0,overdueAmt=0,notStarted=true;
+
+  const clearedByText=wkVals.some(v=>v!==null&&typeof v==='string'&&v.toLowerCase().includes('clear'));
+
+  for(let i=0;i<numWeeks;i++){
+    const dueDate=new Date(startDate.getTime()+(i+1)*7*24*3600*1000);
+    const isPast=todayDate>=dueDate;
+    const rawVal=wkVals[i];
+    const isEmpty=(rawVal===null||rawVal===''||rawVal===undefined);
+    const isClearedText=!isEmpty&&typeof rawVal==='string'&&rawVal.toLowerCase().includes('clear');
+    let paidAmt=0;
+    if(isClearedText){paidAmt=wkAmt;}
+    else if(!isEmpty){paidAmt=parseFloat(rawVal)||0;}
+    if(paidAmt>0)notStarted=false;
+    if(paidAmt>=wkAmt){
+      paidInstalments.push(paidAmt);paidCount++;
+    }else if(paidAmt>0){
+      paidInstalments.push(paidAmt);
+      if(isPast){overdueAmt+=wkAmt-paidAmt;overdueCount++;}
+    }else{
+      paidInstalments.push(0);
+      if(isPast){overdueAmt+=wkAmt;overdueCount++;}
+    }
+  }
+  const isCleared=clearedByText||paidCount>=numWeeks;
+  const finalPaidCount=isCleared?numWeeks:paidCount;
+  let loanStatus='active';
+  if(isCleared)loanStatus='paid';
+  else if(overdueCount>0)loanStatus='overdue';
+  else if(notStarted&&new Date(startDate.getTime()+7*24*3600*1000)<todayDate)loanStatus='overdue';
+  return{paidInstalments,paidCount:finalPaidCount,loanStatus,overdueCount,overdueAmt,notStarted:notStarted&&!isCleared,cleared:isCleared};
+}
+
+// ─── PARSE EXCEL FILE ─────────────────────────────────────────
 let impBuf=[];
-function parseExcelFile(file){return new Promise((res,rej)=>{const r=new FileReader();r.onload=e=>{try{const wb=XLSX.read(e.target.result,{type:'array'}),ws=wb.Sheets[wb.SheetNames[0]],rows=XLSX.utils.sheet_to_json(ws,{header:1,defval:''});if(!rows.length){rej('Empty file');return;}const headers=rows[0].map(h=>(h||'').toString()),hm=mapHeaders(headers),parsed=[];for(let i=1;i<rows.length;i++){const row=rows[i];if(!row.length||row.every(c=>!c))continue;const g=f=>hm[f]!==undefined?(row[hm[f]]||'').toString().trim():'',gn=f=>parseFloat(g(f))||0,inst=[];['i1','i2','i3','i4','i5','i6'].forEach(k=>{const v=gn(k);if(v>0)inst.push(v);});parsed.push({nid:g('nid'),name:g('name'),phone:g('phone'),biz:g('biz'),bsloc:g('bsloc'),res:g('res'),p:gn('p'),w:parseInt(g('w'))||0,start:g('start'),day:g('day'),gname:g('gname'),gphone:g('gphone'),instalments:inst});}res(parsed);}catch(e){rej('Parse error: '+e.message);}};r.onerror=()=>rej('Read failed');r.readAsArrayBuffer(file);});}
+function parseExcelFile(file){
+  return new Promise((res,rej)=>{
+    const r=new FileReader();
+    r.onload=e=>{
+      try{
+        const wb=XLSX.read(e.target.result,{type:'array',cellDates:false});
+        const ws=wb.Sheets[wb.SheetNames[0]];
+        const rows=XLSX.utils.sheet_to_json(ws,{header:1,defval:''});
+        if(!rows.length){rej('Empty file');return;}
+        const headers=rows[0].map(h=>(h||'').toString());
+        const hm=mapHeaders(headers);
+        const todayStr=today();
+        const parsed=[];
+        for(let i=1;i<rows.length;i++){
+          const row=rows[i];
+          if(!row.length||row.every(c=>c===''||c===null||c===undefined))continue;
+          const g=f=>{const idx=hm[f];return idx!==undefined&&row[idx]!==undefined?row[idx].toString().trim():''};
+          const gn=f=>parseFloat(g(f))||0;
+          const startRaw=hm['start']!==undefined?row[hm['start']]:'';
+          const startDate=parseImportDate(startRaw)||todayStr;
+          const instamt=gn('instamt');
+          const numWeeks=parseInt(g('w'))||0;
+          const wkKeys=['i1','i2','i3','i4','i5','i6','i7','i8'];
+          const rawInstalments=wkKeys.map(k=>{
+            const idx=hm[k];
+            if(idx===undefined)return null;
+            const v=row[idx];
+            if(v===''||v===undefined||v===null)return null;
+            return v;
+          });
+          while(rawInstalments.length<numWeeks)rawInstalments.push(null);
+          const loanData=computeLoanStatus({instamt,w:numWeeks,start:startDate,rawInstalments},todayStr);
+          parsed.push({
+            nid:g('nid'),name:g('name'),phone:g('phone'),biz:g('biz'),bsloc:g('bsloc'),res:g('res'),
+            p:gn('p'),instamt,w:numWeeks,start:startDate,day:g('day'),
+            gname:g('gname'),gphone:g('gphone'),
+            ...loanData
+          });
+        }
+        res(parsed);
+      }catch(e){rej('Parse error: '+e.message);}
+    };
+    r.onerror=()=>rej('Read failed');
+    r.readAsArrayBuffer(file);
+  });
+}
+
+// ─── IMPORT FILE HANDLERS (modal + sidebar panel) ─────────────
 async function fileSelect(e){const f=e.target.files[0];if(f)await processImportFile(f);}
 async function fileDrop(e){e.preventDefault();const f=e.dataTransfer.files[0];if(f)await processImportFile(f);}
+
 async function processImportFile(file){
-  const prev=document.getElementById('imp-prev'),acts=document.getElementById('imp-acts');
-  prev.innerHTML='<div class="ai-load" style="padding:14px">Parsing file…</div>';acts.style.display='none';impBuf=[];
-  try{const rows=await parseExcelFile(file),existing=await getCustomers(),existPhones=new Set(existing.map(c=>c.phone));let ok=0,warn=0,err=0;
-  const validated=rows.map(row=>{if(!row.name)return{...row,_s:'err',_m:'Missing name'};if(!row.phone)return{...row,_s:'err',_m:'Missing phone'};if(existPhones.has(row.phone))return{...row,_s:'warn',_m:'Phone exists in DB'};return{...row,_s:'ok',_m:'Ready'};});
-  validated.forEach(r=>{if(r._s==='ok'){ok++;impBuf.push(r);}else if(r._s==='warn')warn++;else err++;});
-  let html=`<div class="abox ${ok>0?'success':'danger'}" style="margin-top:12px">Found <b>${rows.length}</b> rows · <b style="color:var(--grn3)">${ok}</b> ready · <b style="color:var(--gold2)">${warn}</b> duplicates · <b style="color:var(--ruby3)">${err}</b> errors</div>`;
-  html+=`<div style="max-height:240px;overflow-y:auto;margin-top:8px">`;
-  validated.slice(0,15).forEach(row=>{html+=`<div class="ir ${row._s}"><div class="ir-s">${row._s==='ok'?'✓':row._s==='warn'?'!':'✗'}</div><b>${row.name||'—'}</b><span class="muted" style="margin-left:8px">${row.phone}</span><span class="muted" style="margin-left:8px">${row.biz||''}</span>${row.p?`<span class="mono gold" style="margin-left:auto">KES ${kshS(row.p)}</span>`:''}<span style="font-size:9px;margin-left:8px;color:${row._s==='ok'?'var(--grn3)':row._s==='warn'?'var(--gold2)':'var(--ruby3)'}">${row._m}</span></div>`;});
-  if(rows.length>15)html+=`<div style="text-align:center;padding:6px;font-size:10px;color:var(--text3)">… and ${rows.length-15} more</div>`;
-  html+='</div>';prev.innerHTML=html;if(ok>0){acts.style.display='flex';document.getElementById('imp-btn').textContent=`Import ${ok} Customer${ok!==1?'s':''}`;}}
-  catch(e){prev.innerHTML=`<div class="abox danger" style="margin-top:12px">❌ ${e}</div>`;}
+  // Detect which context is active: sidebar panel or modal
+  const panelPrev=document.getElementById('imp-prev-panel');
+  const modalPrev=document.getElementById('imp-prev');
+  const usePanel=panelPrev&&panelPrev.offsetParent!==null;
+  const prev=usePanel?panelPrev:modalPrev;
+  const acts=usePanel?document.getElementById('imp-acts-panel'):document.getElementById('imp-acts');
+  const btn=usePanel?document.getElementById('imp-panel-btn'):document.getElementById('imp-btn');
+  if(!prev){return;}
+  prev.innerHTML='<div class="ai-load" style="padding:14px">Parsing file…</div>';
+  if(acts)acts.style.display='none';
+  impBuf=[];
+  try{
+    const rows=await parseExcelFile(file);
+    const existing=await getCustomers();
+    const existPhones=new Set(existing.map(c=>c.phone));
+    let ok=0,warn=0,err=0;
+    const validated=rows.map(row=>{
+      if(!row.name)return{...row,_s:'err',_m:'Missing name'};
+      if(!row.phone)return{...row,_s:'err',_m:'Missing phone'};
+      if(existPhones.has(row.phone))return{...row,_s:'warn',_m:'Phone exists (skip)'};
+      const m=row.cleared?'Cleared ✓':row.loanStatus==='overdue'?'Overdue ⚠':row.notStarted?'Not started':'Ready';
+      return{...row,_s:'ok',_m:m};
+    });
+    validated.forEach(r=>{if(r._s==='ok'){ok++;impBuf.push(r);}else if(r._s==='warn')warn++;else err++;});
+    let html=`<div class="abox ${ok>0?'success':'danger'}" style="margin-top:12px">
+      Found <b>${rows.length}</b> rows · <b style="color:var(--grn3)">${ok}</b> ready · <b style="color:var(--gold2)">${warn}</b> duplicates · <b style="color:var(--ruby3)">${err}</b> errors<br>
+      <span style="font-size:10px;color:var(--text3)">
+        Cleared: <b>${validated.filter(r=>r.cleared).length}</b> ·
+        Overdue: <b>${validated.filter(r=>r.loanStatus==='overdue').length}</b> ·
+        Not yet started: <b>${validated.filter(r=>r.notStarted).length}</b>
+      </span>
+    </div>`;
+    html+=`<div style="max-height:240px;overflow-y:auto;margin-top:8px">`;
+    validated.slice(0,20).forEach(row=>{
+      const sc=row._s==='ok'?(row.cleared?'var(--grn3)':row.loanStatus==='overdue'?'var(--ruby3)':'var(--grn3)'):row._s==='warn'?'var(--gold2)':'var(--ruby3)';
+      html+=`<div class="ir ${row._s}"><div class="ir-s">${row._s==='ok'?'✓':row._s==='warn'?'!':'✗'}</div><b>${row.name||'—'}</b><span class="muted" style="margin-left:8px">${row.phone}</span><span class="muted" style="margin-left:8px">${row.biz||''}</span>${row.p?`<span class="mono gold" style="margin-left:auto">KES ${kshS(row.p)}</span>`:''}<span style="font-size:9px;margin-left:8px;color:${sc}">${row._m}</span></div>`;
+    });
+    if(rows.length>20)html+=`<div style="text-align:center;padding:6px;font-size:10px;color:var(--text3)">… and ${rows.length-20} more</div>`;
+    html+='</div>';
+    prev.innerHTML=html;
+    if(ok>0){if(acts)acts.style.display='flex';if(btn)btn.textContent=`Import ${ok} Customer${ok!==1?'s':''}`;}
+  }catch(e){prev.innerHTML=`<div class="abox danger" style="margin-top:12px">❌ ${e}</div>`;}
 }
+
 async function doImport(){
   if(!impBuf.length)return;
-
-  const btn=document.getElementById('imp-btn');
-  btn.disabled=true;
-  btn.classList.add('spin-btn');
-
-  let added=0;
-  let loanCount=0;
-
+  const panelBtn=document.getElementById('imp-panel-btn');
+  const modalBtn=document.getElementById('imp-btn');
+  const btn=(panelBtn&&panelBtn.offsetParent!==null)?panelBtn:modalBtn;
+  if(btn){btn.disabled=true;btn.classList.add('spin-btn');}
+  let added=0,loanCount=0;
   try{
-
     for(const row of impBuf){
-
-      const custPayload={
-        full_name:row.name,
-        phone:row.phone,
-        national_id:row.nid||null,
-        business_name:row.biz||null,
-        residence:row.res||null,
-        mpesa_number:row.phone,
-        assigned_agent:CU.user.id,
-        status:'active'
-      };
-
+      const custPayload={full_name:row.name,phone:row.phone,national_id:row.nid||null,business_name:row.biz||null,residence:row.res||null,county:row.bsloc||null,mpesa_number:row.phone,assigned_agent:CU.user.id,status:'active'};
       let cust;
-
-      try{
-        cust=await createCustomer(custPayload);
-        added++;
-      }catch(e){
-        continue;
-      }
-
-      if(row.p>0 && row.w>0 && cust){
-
+      try{cust=await createCustomer(custPayload);added++;}catch(e){continue;}
+      if(row.p>0&&row.w>0&&cust){
         const rc=gRate(row.p);
         const startDate=row.start||today();
-
-        const wk=row.instamt>0
-          ? row.instamt
-          : weeklyFor(row.p,row.w);
-
+        const wk=row.instamt>0?row.instamt:weeklyFor(row.p,row.w);
         const tot=wk*row.w;
-
         try{
-
           const lnum=await genLoanNumber();
-
           const loan=await createLoan({
-            loan_number:lnum,
-            customer_id:cust.id,
-            issued_by:CU.user.id,
-            principal:row.p,
-            interest:rc.i[row.w]||0,
-            total_repayable:tot,
-            instalments:row.w,
-            paid_count:row.paidCount,
-            start_date:startDate,
-            due_date:addWeeks(startDate,row.w),
-            collection_day:row.day||'Monday',
-            purpose:'Business / Working Capital',
-            registration_fee:300,
-            processing_fee:rc.pf||0,
-            weekly_instalment:wk,
-            status:row.loanStatus
+            loan_number:lnum,customer_id:cust.id,issued_by:CU.user.id,
+            principal:row.p,interest:rc?rc.i[row.w]||0:0,total_repayable:tot,
+            instalments:row.w,paid_count:row.paidCount,start_date:startDate,
+            due_date:addWeeks(startDate,row.w),collection_day:row.day||'Monday',
+            purpose:'Business / Working Capital',registration_fee:200,
+            processing_fee:rc?rc.pf||0:0,weekly_instalment:wk,status:row.loanStatus
           });
-
+          // Record each paid instalment with correct date = loanDate + (week * 7 days)
           for(let i=0;i<row.paidInstalments.length;i++){
-
             const amt=row.paidInstalments[i];
-
             if(amt>0){
+              const payDate=new Date(new Date(startDate).getTime()+(i+1)*7*24*3600*1000);
               await createPayment({
-                loan_id:loan.id,
-                amount:amt,
-                mpesa_receipt:'IMPORT-WK'+(i+1),
-                channel:'Cash',
-                instalment_no:i+1,
-                paid_at:new Date(
-                  addWeeks(startDate,i+1)
-                ).toISOString(),
-                recorded_by:CU.user.id
+                loan_id:loan.id,amount:amt,mpesa_receipt:'IMPORT-WK'+(i+1),
+                channel:'Cash',instalment_no:i+1,paid_at:payDate.toISOString(),recorded_by:CU.user.id
               });
             }
           }
-
           loanCount++;
-
-        }catch(e){
-          console.error('Loan import error:',e);
-        }
+        }catch(e){console.error('Loan import error:',e);}
       }
     }
-
-    document.getElementById('imp-s1').classList.add('hidden');
-    document.getElementById('imp-s2').classList.remove('hidden');
-
-    document.getElementById('imp-res').innerHTML=
-      `<div class="abox success">
-        ✅ Imported <b>${added}</b> customers and
-        <b>${loanCount}</b> loan records into Supabase.
-      </div>
-      <div class="rmmetric">
-        <div class="big grn">${added}</div>
-        <div class="lbl">Customers Added to DB</div>
-      </div>`;
-
+    // Show success in whichever context is active
+    const panelPrev=document.getElementById('imp-prev-panel');
+    const usePanel=panelPrev&&panelPrev.offsetParent!==null;
+    const successHtml=`<div class="abox success">✅ Imported <b>${added}</b> customers and <b>${loanCount}</b> loan records into Supabase.</div><div class="rmmetric"><div class="big grn">${added}</div><div class="lbl">Customers Added to DB</div></div>`;
+    if(usePanel){
+      panelPrev.innerHTML=successHtml;
+      const pa=document.getElementById('imp-acts-panel');if(pa)pa.style.display='none';
+    }else{
+      const s1=document.getElementById('imp-s1'),s2=document.getElementById('imp-s2'),res=document.getElementById('imp-res');
+      if(s1)s1.classList.add('hidden');if(s2)s2.classList.remove('hidden');if(res)res.innerHTML=successHtml;
+    }
     impBuf=[];
     toast(`${added} customers saved to Supabase!`,'success');
-
-  }finally{
-    btn.disabled=false;
-    btn.classList.remove('spin-btn');
-  }
+  }finally{if(btn){btn.disabled=false;btn.classList.remove('spin-btn');}}
 }
-function impReset(){impBuf=[];document.getElementById('imp-s1').classList.remove('hidden');document.getElementById('imp-s2').classList.add('hidden');document.getElementById('imp-prev').innerHTML='';document.getElementById('imp-acts').style.display='none';document.getElementById('xl-inp').value='';}
+
+function impReset(){
+  impBuf=[];
+  const s1=document.getElementById('imp-s1'),s2=document.getElementById('imp-s2'),prev=document.getElementById('imp-prev'),acts=document.getElementById('imp-acts'),inp=document.getElementById('xl-inp');
+  if(s1)s1.classList.remove('hidden');if(s2)s2.classList.add('hidden');if(prev)prev.innerHTML='';if(acts)acts.style.display='none';if(inp)inp.value='';
+}
+function inlineReset(){
+  impBuf=[];
+  const prev=document.getElementById('imp-prev-panel'),acts=document.getElementById('imp-acts-panel'),inp=document.getElementById('xl-panel-inp');
+  if(prev)prev.innerHTML='';if(acts)acts.style.display='none';if(inp)inp.value='';
+}
 PANEL_RENDERERS['import']=async function(el){
   el.innerHTML=`
   <div class="sec-hd"><div class="sec-title">Import <span>Customers</span></div></div>
