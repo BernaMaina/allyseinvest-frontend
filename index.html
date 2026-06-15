@@ -1875,9 +1875,11 @@ function normalizePhone(v){
   if(!s)return '';
   // Strip country code +254 or 254 -> replace with 0
   if(s.startsWith('+254'))s='0'+s.slice(4);
-  else if(s.startsWith('254')&&s.length===12)s='0'+s.slice(3);
+  else if(s.startsWith('254')&&s.length>=12)s='0'+s.slice(3);
   // If 9 digits (missing leading 0), add it
   else if(s.length===9&&!s.startsWith('0'))s='0'+s;
+  // Truncate to 10 digits if too long (e.g. typos like 07939944511 -> 0793994451)
+  if(s.length>10&&s.startsWith('0'))s=s.slice(0,10);
   return s;
 }
 function mapHeaders(headers){
@@ -2078,21 +2080,41 @@ async function doImport(){
   const btn=(panelBtn&&panelBtn.offsetParent!==null)?panelBtn:modalBtn;
   if(btn){btn.disabled=true;btn.classList.add('spin-btn');}
   let added=0,loanCount=0;
+  const importErrors=[];
   try{
     for(const row of impBuf){
-      const custPayload={full_name:row.name,phone:row.phone,national_id:row.nid||null,business_name:row.biz||null,residence:row.res||null,county:row.bsloc||null,mpesa_number:row.phone,assigned_agent:CU.user.id,status:'active'};
+      // Sanitise national_id: blank/whitespace -> null to avoid UNIQUE collisions on empty strings
+      const nid=(row.nid||'').toString().trim()||null;
+      const custPayload={full_name:row.name,phone:row.phone,national_id:nid,business_name:row.biz||null,residence:row.res||null,county:row.bsloc||null,mpesa_number:row.phone,assigned_agent:CU.user.id,status:'active'};
       let cust;
       try{
         if(row._dup&&row._existId){
-          // Update existing customer record
-          const{data:updated}=await SB.from('customers').update(custPayload).eq('id',row._existId).select().single();
+          // Update existing customer — don't overwrite national_id if new value is null
+          const updatePayload={...custPayload};
+          if(!nid)delete updatePayload.national_id;
+          const{data:updated,error:ue}=await SB.from('customers').update(updatePayload).eq('id',row._existId).select().single();
+          if(ue)throw ue;
           cust=updated;
           added++;
         }else{
-          cust=await createCustomer(custPayload);
+          // New customer — if national_id conflicts, retry without it
+          try{
+            cust=await createCustomer(custPayload);
+          }catch(e1){
+            if(e1.message&&(e1.message.includes('national_id')||e1.message.includes('unique'))){
+              const payloadNoNid={...custPayload,national_id:null};
+              cust=await createCustomer(payloadNoNid);
+            }else{
+              throw e1;
+            }
+          }
           added++;
         }
-      }catch(e){console.error('Customer error:',e);continue;}
+      }catch(e){
+        console.error('Customer error:',row.name,e);
+        importErrors.push(`${row.name} (${row.phone}): ${e.message||e}`);
+        continue;
+      }
       if(row.p>0&&row.w>0&&cust){
         // Check if a loan already exists for this customer+start_date to avoid duplicates
         const{data:existLoans}=await SB.from('loans').select('id').eq('customer_id',cust.id).eq('start_date',row.start||today());
@@ -2123,14 +2145,18 @@ async function doImport(){
             }
           }
           loanCount++;
-        }catch(e){console.error('Loan import error:',e);}
+        }catch(e){
+          console.error('Loan import error:',row.name,e);
+          importErrors.push(`Loan for ${row.name}: ${e.message||e}`);
+        }
       }
     }
     // Show success in whichever context is active
     const panelPrev=document.getElementById('imp-prev-panel');
     const usePanel=panelPrev&&panelPrev.offsetParent!==null;
     const newCount=impBuf.filter(r=>!r._dup).length,updCount=impBuf.filter(r=>r._dup).length;
-    const successHtml=`<div class="abox success">✅ <b>${added}</b> customers processed (<b>${newCount}</b> new, <b>${updCount}</b> updated) · <b>${loanCount}</b> loan records saved.</div><div class="rmmetric"><div class="big grn">${added}</div><div class="lbl">Customers Processed</div></div>`;
+    const errHtml=importErrors.length?`<div class="abox warn" style="margin-top:8px;font-size:11px"><b>${importErrors.length} row(s) skipped:</b><br>${importErrors.map(e=>`• ${e}`).join('<br>')}</div>`:'';
+    const successHtml=`<div class="abox ${added>0?'success':'danger'}">✅ <b>${added}</b> customers processed (<b>${newCount}</b> new, <b>${updCount}</b> updated) · <b>${loanCount}</b> loan records saved.</div>${errHtml}<div class="rmmetric"><div class="big grn">${added}</div><div class="lbl">Customers Processed</div></div>`;
     if(usePanel){
       panelPrev.innerHTML=successHtml;
       const pa=document.getElementById('imp-acts-panel');if(pa)pa.style.display='none';
@@ -2139,9 +2165,10 @@ async function doImport(){
       if(s1)s1.classList.add('hidden');if(s2)s2.classList.remove('hidden');if(res)res.innerHTML=successHtml;
     }
     impBuf=[];
-    toast(`${added} customers saved to Supabase!`,'success');
+    toast(`${added} customers saved to Supabase!`,added>0?'success':'error');
   }finally{if(btn){btn.disabled=false;btn.classList.remove('spin-btn');}}
 }
+
 
 function impReset(){
   impBuf=[];
