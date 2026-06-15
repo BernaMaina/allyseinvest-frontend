@@ -1869,12 +1869,31 @@ const COL_ALIASES={
   i8:['wk8 instlmnt','wk8 instalment','wk8','instlmnt8','instalment8']
 };
 function normKey(s){return(s||'').toString().toLowerCase().trim().replace(/[^a-z0-9 .]/g,'').replace(/\s+/g,' ');}
+function normalizePhone(v){
+  // Convert integer or string phone to Kenyan format with leading zero
+  let s=(v||'').toString().trim().replace(/\s+/g,'').replace(/[^0-9+]/g,'');
+  if(!s)return '';
+  // Strip country code +254 or 254 -> replace with 0
+  if(s.startsWith('+254'))s='0'+s.slice(4);
+  else if(s.startsWith('254')&&s.length===12)s='0'+s.slice(3);
+  // If 9 digits (missing leading 0), add it
+  else if(s.length===9&&!s.startsWith('0'))s='0'+s;
+  return s;
+}
 function mapHeaders(headers){
   const map={};
+  // First pass: exact matches only
   headers.forEach((h,i)=>{
     const nk=normKey(h);
     for(const[field,aliases]of Object.entries(COL_ALIASES)){
-      if(!map[field]&&aliases.some(a=>nk===a||nk.includes(a)||a.includes(nk)))map[field]=i;
+      if(!map[field]&&aliases.some(a=>nk===a))map[field]=i;
+    }
+  });
+  // Second pass: substring matches for anything still unmapped
+  headers.forEach((h,i)=>{
+    const nk=normKey(h);
+    for(const[field,aliases]of Object.entries(COL_ALIASES)){
+      if(!map[field]&&aliases.some(a=>nk.includes(a)||a.includes(nk)))map[field]=i;
     }
   });
   return map;
@@ -1979,9 +1998,9 @@ function parseExcelFile(file){
           while(rawInstalments.length<numWeeks)rawInstalments.push(null);
           const loanData=computeLoanStatus({instamt,w:numWeeks,start:startDate,rawInstalments},todayStr);
           parsed.push({
-            nid:g('nid'),name:g('name'),phone:g('phone'),biz:g('biz'),bsloc:g('bsloc'),res:g('res'),
+            nid:g('nid'),name:g('name'),phone:normalizePhone(g('phone')),biz:g('biz'),bsloc:g('bsloc'),res:g('res'),
             p:gn('p'),instamt,w:numWeeks,start:startDate,day:g('day'),
-            gname:g('gname'),gphone:g('gphone'),
+            gname:g('gname'),gphone:normalizePhone(g('gphone')),
             ...loanData
           });
         }
@@ -2014,16 +2033,25 @@ async function processImportFile(file){
     const existing=await getCustomers();
     const existPhones=new Set(existing.map(c=>c.phone));
     let ok=0,warn=0,err=0;
+    const existMap=Object.fromEntries(existing.map(c=>[c.phone,c]));
     const validated=rows.map(row=>{
       if(!row.name)return{...row,_s:'err',_m:'Missing name'};
       if(!row.phone)return{...row,_s:'err',_m:'Missing phone'};
-      if(existPhones.has(row.phone))return{...row,_s:'warn',_m:'Phone exists (skip)'};
+      if(existPhones.has(row.phone)){
+        // Duplicate: include for upsert (update customer + add loan if missing)
+        const m=row.cleared?'Update+Cleared ✓':row.loanStatus==='overdue'?'Update+Overdue ⚠':'Update existing';
+        return{...row,_s:'warn',_dup:true,_existId:existMap[row.phone]?.id,_m:m};
+      }
       const m=row.cleared?'Cleared ✓':row.loanStatus==='overdue'?'Overdue ⚠':row.notStarted?'Not started':'Ready';
       return{...row,_s:'ok',_m:m};
     });
-    validated.forEach(r=>{if(r._s==='ok'){ok++;impBuf.push(r);}else if(r._s==='warn')warn++;else err++;});
+    validated.forEach(r=>{
+      if(r._s==='ok'){ok++;impBuf.push(r);}
+      else if(r._s==='warn'){warn++;impBuf.push(r);} // include duplicates for upsert
+      else err++;
+    });
     let html=`<div class="abox ${ok>0?'success':'danger'}" style="margin-top:12px">
-      Found <b>${rows.length}</b> rows · <b style="color:var(--grn3)">${ok}</b> ready · <b style="color:var(--gold2)">${warn}</b> duplicates · <b style="color:var(--ruby3)">${err}</b> errors<br>
+      Found <b>${rows.length}</b> rows · <b style="color:var(--grn3)">${ok}</b> new · <b style="color:var(--gold2)">${warn}</b> updates · <b style="color:var(--ruby3)">${err}</b> errors<br>
       <span style="font-size:10px;color:var(--text3)">
         Cleared: <b>${validated.filter(r=>r.cleared).length}</b> ·
         Overdue: <b>${validated.filter(r=>r.loanStatus==='overdue').length}</b> ·
@@ -2038,7 +2066,8 @@ async function processImportFile(file){
     if(rows.length>20)html+=`<div style="text-align:center;padding:6px;font-size:10px;color:var(--text3)">… and ${rows.length-20} more</div>`;
     html+='</div>';
     prev.innerHTML=html;
-    if(ok>0){if(acts)acts.style.display='flex';if(btn)btn.textContent=`Import ${ok} Customer${ok!==1?'s':''}`;}
+    const total=ok+warn;
+    if(total>0){if(acts)acts.style.display='flex';if(btn)btn.textContent=`Import ${ok} new + ${warn} update${warn!==1?'s':''}`;}
   }catch(e){prev.innerHTML=`<div class="abox danger" style="margin-top:12px">❌ ${e}</div>`;}
 }
 
@@ -2053,8 +2082,21 @@ async function doImport(){
     for(const row of impBuf){
       const custPayload={full_name:row.name,phone:row.phone,national_id:row.nid||null,business_name:row.biz||null,residence:row.res||null,county:row.bsloc||null,mpesa_number:row.phone,assigned_agent:CU.user.id,status:'active'};
       let cust;
-      try{cust=await createCustomer(custPayload);added++;}catch(e){continue;}
+      try{
+        if(row._dup&&row._existId){
+          // Update existing customer record
+          const{data:updated}=await SB.from('customers').update(custPayload).eq('id',row._existId).select().single();
+          cust=updated;
+          added++;
+        }else{
+          cust=await createCustomer(custPayload);
+          added++;
+        }
+      }catch(e){console.error('Customer error:',e);continue;}
       if(row.p>0&&row.w>0&&cust){
+        // Check if a loan already exists for this customer+start_date to avoid duplicates
+        const{data:existLoans}=await SB.from('loans').select('id').eq('customer_id',cust.id).eq('start_date',row.start||today());
+        if(existLoans&&existLoans.length>0){loanCount++;continue;}// loan already imported
         const rc=gRate(row.p);
         const startDate=row.start||today();
         const wk=row.instamt>0?row.instamt:weeklyFor(row.p,row.w);
@@ -2087,7 +2129,8 @@ async function doImport(){
     // Show success in whichever context is active
     const panelPrev=document.getElementById('imp-prev-panel');
     const usePanel=panelPrev&&panelPrev.offsetParent!==null;
-    const successHtml=`<div class="abox success">✅ Imported <b>${added}</b> customers and <b>${loanCount}</b> loan records into Supabase.</div><div class="rmmetric"><div class="big grn">${added}</div><div class="lbl">Customers Added to DB</div></div>`;
+    const newCount=impBuf.filter(r=>!r._dup).length,updCount=impBuf.filter(r=>r._dup).length;
+    const successHtml=`<div class="abox success">✅ <b>${added}</b> customers processed (<b>${newCount}</b> new, <b>${updCount}</b> updated) · <b>${loanCount}</b> loan records saved.</div><div class="rmmetric"><div class="big grn">${added}</div><div class="lbl">Customers Processed</div></div>`;
     if(usePanel){
       panelPrev.innerHTML=successHtml;
       const pa=document.getElementById('imp-acts-panel');if(pa)pa.style.display='none';
