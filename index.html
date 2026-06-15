@@ -1882,6 +1882,21 @@ function normalizePhone(v){
   if(s.length>10&&s.startsWith('0'))s=s.slice(0,10);
   return s;
 }
+
+function normalizeDay(v){
+  const s=(v||'').toString().trim().toLowerCase();
+  if(s==='mon'||s==='monday')   return 'Monday';
+  if(s==='tue'||s==='tuesday')  return 'Tuesday';
+  if(s==='wed'||s==='wednesday')return 'Wednesday';
+  if(s==='thu'||s==='thur'||s==='thurs'||s==='thursday') return 'Thursday';
+  if(s==='fri'||s==='frid'||s==='friday')  return 'Friday';
+  if(s==='sat'||s==='saturday') return 'Saturday';
+  // Already a full name?
+  const full=['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+  const match=full.find(d=>d.toLowerCase()===s);
+  if(match)return match;
+  return 'Monday'; // safe default
+}
 function mapHeaders(headers){
   const map={};
   // First pass: exact matches only
@@ -2129,7 +2144,7 @@ async function doImport(){
             loan_number:lnum,customer_id:cust.id,issued_by:CU.user.id,
             principal:row.p,interest:rc?rc.i[row.w]||0:0,total_repayable:tot,
             instalments:row.w,paid_count:row.paidCount,start_date:startDate,
-            due_date:addWeeks(startDate,row.w),collection_day:row.day||'Monday',
+            due_date:addWeeks(startDate,row.w),collection_day:normalizeDay(row.day),
             purpose:'Business / Working Capital',registration_fee:200,
             processing_fee:rc?rc.pf||0:0,weekly_instalment:wk,status:row.loanStatus
           });
