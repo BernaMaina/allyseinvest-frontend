@@ -923,12 +923,33 @@ function totalFor(p,w){
 }
 
 function weeklyFor(p,w){
-  return Math.round((totalFor(p,w)/w)/10)*10;
+  // Round UP to the nearest 5 (e.g. 1772->1775, 1553->1555, 1556->1560)
+  return Math.ceil((totalFor(p,w)/w)/5)*5;
 }
 
+// Outstanding balance now uses the ACTUAL sum of payments recorded against
+// the loan (loan.amount_paid, attached by attachPaymentTotals()) instead of
+// assuming paid_count*weekly was always paid in full. This correctly
+// reflects partial weekly payments. Falls back to the old paid_count-based
+// estimate only if amount_paid hasn't been attached (e.g. loan object came
+// from somewhere that didn't fetch payments).
 function getOutstandingCalc(loan){
-  const wk=weeklyFor(loan.principal,loan.instalments);
-  return Math.max(0,loan.total_repayable-(wk*loan.paid_count));
+  const paid=(loan.amount_paid!=null)?Number(loan.amount_paid):(weeklyFor(loan.principal,loan.instalments)*(loan.paid_count||0));
+  return Math.max(0,loan.total_repayable-paid);
+}
+
+// Fetches the sum of all payments per loan_id for a batch of loans in one
+// query and attaches it as loan.amount_paid so getOutstandingCalc() can
+// reflect partial payments accurately.
+async function attachPaymentTotals(loans){
+  if(!loans||!loans.length)return loans;
+  const ids=loans.map(l=>l.id);
+  const{data,error}=await SB.from('payments').select('loan_id,amount').in('loan_id',ids);
+  if(error){console.error(error);return loans;}
+  const map={};
+  (data||[]).forEach(p=>{map[p.loan_id]=(map[p.loan_id]||0)+Number(p.amount||0);});
+  loans.forEach(l=>{l.amount_paid=map[l.id]||0;});
+  return loans;
 }
 
 
@@ -1040,8 +1061,8 @@ async function doLogout(){await SB?.auth.signOut();CU=null;showScreen('login');}
 async function getCustomers(){const{data,error}=await SB.from('customers').select('*').order('created_at',{ascending:false});if(error){console.error(error);return[];}return data||[];}
 async function createCustomer(c){const{data,error}=await SB.from('customers').insert([c]).select().single();if(error)throw error;return data;}
 async function updateCustomer(id,c){const{data,error}=await SB.from('customers').update(c).eq('id',id).select().single();if(error)throw error;return data;}
-async function getLoans(){const{data,error}=await SB.from('loans').select(`*, customers(full_name,phone,business_name,residence)`).order('created_at',{ascending:false});if(error){console.error(error);return[];}return data||[];}
-async function getLoansByCustomer(custId){const{data,error}=await SB.from('loans').select('*').eq('customer_id',custId).order('created_at',{ascending:false});if(error){console.error(error);return[];}return data||[];}
+async function getLoans(){const{data,error}=await SB.from('loans').select(`*, customers(full_name,phone,business_name,residence)`).order('created_at',{ascending:false});if(error){console.error(error);return[];}return attachPaymentTotals(data||[]);}
+async function getLoansByCustomer(custId){const{data,error}=await SB.from('loans').select('*').eq('customer_id',custId).order('created_at',{ascending:false});if(error){console.error(error);return[];}return attachPaymentTotals(data||[]);}
 async function createLoan(loan){const{data,error}=await SB.from('loans').insert([loan]).select().single();if(error)throw error;return data;}
 async function getPayments(loanId){let q=SB.from('payments').select('*').order('paid_at',{ascending:false});if(loanId)q=q.eq('loan_id',loanId);const{data,error}=await q;if(error){console.error(error);return[];}return data||[];}
 async function getAllPayments(){const{data,error}=await SB.from('payments').select(`*, loans(loan_number,customer_id,customers(full_name))`).order('paid_at',{ascending:false});if(error){console.error(error);return[];}return data||[];}
@@ -1071,6 +1092,16 @@ const fmts=d=>{try{return new Date(d).toLocaleDateString('en-KE',{day:'2-digit',
 const addDays=(d,n)=>{const dt=new Date(d);dt.setDate(dt.getDate()+n);return dt.toISOString().slice(0,10);};
 const addWeeks=(d,w)=>addDays(d,w*7);
 const today=()=>new Date().toISOString().slice(0,10);
+// Returns {monday, sunday} (as Date objects, start/end of day) for the
+// Monday-Sunday calendar week containing the given date (default: now).
+function getWeekBounds(d){
+  const dt=d?new Date(d):new Date();
+  const day=dt.getDay(); // 0=Sun,1=Mon,...6=Sat
+  const diffToMonday=(day===0?-6:1-day); // shift back to Monday
+  const monday=new Date(dt);monday.setHours(0,0,0,0);monday.setDate(monday.getDate()+diffToMonday);
+  const sunday=new Date(monday);sunday.setDate(sunday.getDate()+6);sunday.setHours(23,59,59,999);
+  return{monday,sunday};
+}
 const inits=name=>(name||'?').split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();
 function toast(msg,type='success'){const el=document.getElementById('toast');document.getElementById('tm').textContent=msg;document.getElementById('ti').textContent={success:'✓',error:'✗',info:'ℹ'}[type]||'●';el.className='show '+type;setTimeout(()=>el.classList.remove('show'),3500);}
 function openModal(id){document.getElementById(id).classList.add('open');}
@@ -1461,7 +1492,8 @@ PANEL_RENDERERS['reminders']=async function(el){
   el.innerHTML=loading();
   const loans=await getLoans();
   const ov=loans.filter(l=>l.status==='overdue');
-  const dueWk=loans.filter(l=>{if(l.status==='paid')return false;const nd=addWeeks(l.start_date,l.paid_count+1);const d=(new Date(nd)-new Date())/86400000;return d>=0&&d<=7;});
+  const{monday:wkMon,sunday:wkSun}=getWeekBounds();
+  const dueWk=loans.filter(l=>{if(l.status==='paid')return false;const nd=new Date(addWeeks(l.start_date,l.paid_count+1));return nd>=wkMon&&nd<=wkSun;});
   const apps=await getApplications(),pend=apps.filter(a=>a.status==='pending');
   el.innerHTML=`
   <div class="sg">
@@ -1803,8 +1835,12 @@ async function saveLoan(){
   const r=gRate(p),tot=totalFor(p,w),wk=weeklyFor(p,w);
   btn.disabled=true;btn.classList.add('spin-btn');
   try{
+    // Registration fee (KES 200) only applies to a customer's FIRST loan ever.
+    // Repeat borrowers (2nd, 3rd... loan) only pay the processing fee.
+    const priorLoans=await getLoansByCustomer(cid);
+    const regFee=priorLoans.length>0?0:200;
     const loanNum=await genLoanNumber();
-    await createLoan({loan_number:loanNum,customer_id:cid,issued_by:CU.user.id,principal:p,interest:r.i[w],total_repayable:tot,instalments:w,paid_count:0,start_date:d,due_date:addWeeks(d,w),collection_day:document.getElementById('ml-day').value,purpose:document.getElementById('ml-purpose').value,registration_fee:200,processing_fee:r.pf,weekly_instalment:wk,status:'active'});
+    await createLoan({loan_number:loanNum,customer_id:cid,issued_by:CU.user.id,principal:p,interest:r.i[w],total_repayable:tot,instalments:w,paid_count:0,start_date:d,due_date:addWeeks(d,w),collection_day:document.getElementById('ml-day').value,purpose:document.getElementById('ml-purpose').value,registration_fee:regFee,processing_fee:r.pf,weekly_instalment:wk,status:'active'});
     closeModal('m-loan');toast(`Loan ${loanNum} issued — ${ksh(p)} disbursed!`,'success');
     if(STATE.panel==='loans'||STATE.panel==='dash')showPanel(STATE.panel);
   }catch(e){errEl.textContent=e.message;errEl.classList.remove('hidden');}
@@ -1813,7 +1849,9 @@ async function saveLoan(){
 async function viewLoan(id){
   const{data:l}=await SB.from('loans').select(`*, customers(full_name,phone,business_name)`).eq('id',id).single();
   if(!l)return;
-  const pays=await getPayments(id),out=getOutstandingCalc(l),wk=weeklyFor(l.principal,l.instalments);
+  const pays=await getPayments(id);
+  l.amount_paid=pays.reduce((s,p)=>s+Number(p.amount||0),0);
+  const out=getOutstandingCalc(l),wk=weeklyFor(l.principal,l.instalments);
   let dots='';
   for(let i=1;i<=l.instalments;i++){const cls=i<=l.paid_count?'paid':i===l.paid_count+1&&l.status!=='paid'?'cur':'';dots+=`<div class="wd ${cls}">${i}</div>`;}
   document.getElementById('ai-mc').innerHTML=`
@@ -1845,7 +1883,19 @@ async function savePayment(){
   btn.disabled=true;btn.classList.add('spin-btn');
   try{
     await createPayment({loan_id:loanId||null,amount:amt,mpesa_receipt:ref||null,channel:document.getElementById('mp-via').value,instalment_no:parseInt(document.getElementById('mp-inst').value)||null,paid_at:new Date(date).toISOString(),recorded_by:CU.user.id});
-    if(loanId){const{data:l}=await SB.from('loans').select('paid_count,instalments').eq('id',loanId).single();if(l){const newCount=(l.paid_count||0)+1,newStatus=newCount>=l.instalments?'paid':'active';await SB.from('loans').update({paid_count:newCount,status:newStatus}).eq('id',loanId);}}
+    if(loanId){
+      const{data:l}=await SB.from('loans').select('instalments,weekly_instalment,total_repayable').eq('id',loanId).single();
+      if(l){
+        const{data:payRows}=await SB.from('payments').select('amount').eq('loan_id',loanId);
+        const totalPaid=(payRows||[]).reduce((s,p)=>s+Number(p.amount||0),0);
+        // paid_count = how many FULL weekly instalments the cumulative payments cover.
+        // A partial payment will NOT bump this up, so progress dots / "week cleared"
+        // indicators won't falsely show a week as fully paid.
+        const newCount=Math.min(l.instalments,Math.floor(totalPaid/l.weekly_instalment));
+        const newStatus=totalPaid>=l.total_repayable?'paid':'active';
+        await SB.from('loans').update({paid_count:newCount,status:newStatus}).eq('id',loanId);
+      }
+    }
     closeModal('m-pay');toast(`Payment of ${ksh(amt)} recorded!`,'success');
     if(['payments','loans','dash','reminders'].includes(STATE.panel))showPanel(STATE.panel);
   }catch(e){errEl.textContent=e.message;errEl.classList.remove('hidden');}
@@ -1953,12 +2003,12 @@ function computeLoanStatus(row, todayStr){
   const startDateStr=row.start;
   const wkVals=row.rawInstalments;
   if(!startDateStr||!wkAmt||!numWeeks){
-    return{paidInstalments:[],paidCount:0,loanStatus:'active',overdueCount:0,overdueAmt:0,notStarted:true,cleared:false};
+    return{paidInstalments:[],paidCount:0,loanStatus:'active',overdueCount:0,overdueAmt:0,notStarted:true,cleared:false,futureCount:0};
   }
   const startDate=new Date(startDateStr);
   const todayDate=new Date(todayStr);
   const paidInstalments=[];
-  let paidCount=0,overdueCount=0,overdueAmt=0,notStarted=true;
+  let paidCount=0,overdueCount=0,overdueAmt=0,notStarted=true,futureCount=0;
 
   const clearedByText=wkVals.some(v=>v!==null&&typeof v==='string'&&v.toLowerCase().includes('clear'));
 
@@ -1971,6 +2021,14 @@ function computeLoanStatus(row, todayStr){
     let paidAmt=0;
     if(isClearedText){paidAmt=wkAmt;}
     else if(!isEmpty){paidAmt=parseFloat(rawVal)||0;}
+    // A value sitting in a week column whose due date hasn't happened yet
+    // can't be a real payment — don't import it as one (this was causing
+    // phantom future-dated collections in Analytics). Flag it instead.
+    if(paidAmt>0&&!isPast){
+      paidInstalments.push(0);
+      futureCount++;
+      continue;
+    }
     if(paidAmt>0)notStarted=false;
     if(paidAmt>=wkAmt){
       paidInstalments.push(paidAmt);paidCount++;
@@ -1988,7 +2046,7 @@ function computeLoanStatus(row, todayStr){
   if(isCleared)loanStatus='paid';
   else if(overdueCount>0)loanStatus='overdue';
   else if(notStarted&&new Date(startDate.getTime()+7*24*3600*1000)<todayDate)loanStatus='overdue';
-  return{paidInstalments,paidCount:finalPaidCount,loanStatus,overdueCount,overdueAmt,notStarted:notStarted&&!isCleared,cleared:isCleared};
+  return{paidInstalments,paidCount:finalPaidCount,loanStatus,overdueCount,overdueAmt,notStarted:notStarted&&!isCleared,cleared:isCleared,futureCount};
 }
 
 // ─── PARSE EXCEL FILE ─────────────────────────────────────────
@@ -2070,7 +2128,7 @@ async function processImportFile(file){
         const m=row.cleared?'Update+Cleared ✓':row.loanStatus==='overdue'?'Update+Overdue ⚠':'Update existing';
         return{...row,_s:'warn',_dup:true,_existId:existMap[row.phone]?.id,_m:m};
       }
-      const m=row.cleared?'Cleared ✓':row.loanStatus==='overdue'?'Overdue ⚠':row.notStarted?'Not started':'Ready';
+      const m=row.cleared?'Cleared ✓':row.loanStatus==='overdue'?'Overdue ⚠':row.notStarted?'Not started':row.futureCount>0?`Ready (⚠ ${row.futureCount} future-week value(s) ignored)`:'Ready';
       return{...row,_s:'ok',_m:m};
     });
     validated.forEach(r=>{
@@ -2083,7 +2141,7 @@ async function processImportFile(file){
       <span style="font-size:10px;color:var(--text3)">
         Cleared: <b>${validated.filter(r=>r.cleared).length}</b> ·
         Overdue: <b>${validated.filter(r=>r.loanStatus==='overdue').length}</b> ·
-        Not yet started: <b>${validated.filter(r=>r.notStarted).length}</b>
+        Not yet started: <b>${validated.filter(r=>r.notStarted).length}</b>${validated.some(r=>r.futureCount>0)?` · <span style="color:var(--gold2)">⚠ ${validated.reduce((s,r)=>s+(r.futureCount||0),0)} future-dated week value(s) ignored</span>`:''}
       </span>
     </div>`;
     html+=`<div style="max-height:240px;overflow-y:auto;margin-top:8px">`;
@@ -2150,16 +2208,21 @@ async function doImport(){
         const wk=row.instamt>0?row.instamt:weeklyFor(row.p,row.w);
         const tot=wk*row.w;
         try{
+          // Registration fee (KES 200) only applies to a customer's first-ever loan
+          const{data:priorLoans}=await SB.from('loans').select('id').eq('customer_id',cust.id);
+          const regFee=(priorLoans&&priorLoans.length>0)?0:200;
           const lnum=await genLoanNumber();
           const loan=await createLoan({
             loan_number:lnum,customer_id:cust.id,issued_by:CU.user.id,
             principal:row.p,interest:rc?rc.i[row.w]||0:0,total_repayable:tot,
             instalments:row.w,paid_count:row.paidCount,start_date:startDate,
             due_date:addWeeks(startDate,row.w),collection_day:normalizeDay(row.day),
-            purpose:'Business / Working Capital',registration_fee:200,
+            purpose:'Business / Working Capital',registration_fee:regFee,
             processing_fee:rc?rc.pf||0:0,weekly_instalment:wk,status:row.loanStatus
           });
-          // Record each paid instalment with correct date = loanDate + (week * 7 days)
+          // Record each paid instalment with correct date = loanDate + (week * 7 days).
+          // computeLoanStatus() already zeroed out any week whose due date is still in
+          // the future, so we won't accidentally create payments dated ahead of today.
           for(let i=0;i<row.paidInstalments.length;i++){
             const amt=row.paidInstalments[i];
             if(amt>0){
