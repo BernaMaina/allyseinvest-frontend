@@ -694,7 +694,7 @@ body{font-family:'Outfit',sans-serif;background:var(--ink);color:var(--text);min
     </div>
     <div id="lprev" class="sbox hidden" style="margin-top:12px">
       <div class="sr"><span class="muted">Principal</span><span id="lp-p">—</span></div>
-      <div class="sr"><span class="muted">Registration Fee</span><span>KES 200</span></div>
+      <div class="sr" id="lp-reg-row"><span class="muted">Registration Fee</span><span id="lp-rf">KES 200</span></div>
       <div class="sr"><span class="muted">Processing Fee</span><span id="lp-pf">—</span></div>
       <div class="sr"><span class="muted">Total Interest</span><span id="lp-i">—</span></div>
       <div class="sr"><span class="muted">Total to Repay</span><span id="lp-t">—</span></div>
@@ -1528,7 +1528,7 @@ function genAmort(){
   if(!p||!w)return;
   const r=gRate(p),wk=weeklyFor(p,w),tot=totalFor(p,w),int=r.i[w],pPer=p/w,iPer=int/w;
   const sc=document.getElementById('at-sum'),sb=document.getElementById('at-sumb');
-  if(sc){sc.classList.remove('hidden');sb.innerHTML=`<div class="sbox"><div class="sr"><span class="muted">Principal</span><span>${ksh(p)}</span></div><div class="sr"><span class="muted">Reg Fee</span><span>KES 200</span></div><div class="sr"><span class="muted">Processing Fee</span><span>${ksh(r.pf)}</span></div><div class="sr"><span class="muted">Total Interest</span><span>${ksh(int)}</span></div><div class="sr"><span class="muted">Total Repayable</span><span>${ksh(tot)}</span></div><div class="sr"><span>Weekly</span><span>${ksh(wk)}</span></div></div>`;}
+  if(sc){sc.classList.remove('hidden');sb.innerHTML=`<div class="sbox"><div class="sr"><span class="muted">Principal</span><span>${ksh(p)}</span></div><div class="sr"><span class="muted">Reg Fee</span><span>KES 200 <span style="font-size:10px;color:var(--text3)">(first loan only — KES 0 for repeat)</span></span></div><div class="sr"><span class="muted">Processing Fee</span><span>${ksh(r.pf)}</span></div><div class="sr"><span class="muted">Total Interest</span><span>${ksh(int)}</span></div><div class="sr"><span class="muted">Total Repayable</span><span>${ksh(tot)}</span></div><div class="sr"><span>Weekly</span><span>${ksh(wk)}</span></div></div>`;}
   const tc=document.getElementById('at-tcard'),tbody=document.getElementById('at-tbody'),tfoot=document.getElementById('at-tfoot');
   if(!tc||!tbody||!tfoot)return;
   tc.classList.remove('hidden');
@@ -1572,20 +1572,29 @@ PANEL_RENDERERS['users']=async function(el){
 PANEL_RENDERERS['reports']=async function(el){
   el.innerHTML=loading();
   const[loans,payments,customers]=await Promise.all([getLoans(),getAllPayments(),getCustomers()]);
-  const td=loans.reduce((s,l)=>s+Number(l.principal),0),tc=payments.reduce((s,p)=>s+Number(p.amount),0),ti=loans.reduce((s,l)=>s+Number(l.interest||0),0),tf=loans.reduce((s,l)=>s+Number(l.registration_fee||0)+Number(l.processing_fee||0),0),mpPays=payments.filter(p=>p.channel?.includes('M-Pesa')).reduce((s,p)=>s+Number(p.amount),0);
+  const td=loans.reduce((s,l)=>s+Number(l.principal),0),tc=payments.reduce((s,p)=>s+Number(p.amount),0),ti=loans.reduce((s,l)=>s+Number(l.interest||0),0);
+  // Split fees: registration_fee is 200 for first loans, 0 for repeats (stored correctly per loan).
+  const trf=loans.reduce((s,l)=>s+Number(l.registration_fee||0),0);
+  const tpf=loans.reduce((s,l)=>s+Number(l.processing_fee||0),0);
+  const tf=trf+tpf;
+  const firstLoansCnt=loans.filter(l=>Number(l.registration_fee||0)>0).length;
+  const repeatLoansCnt=loans.filter(l=>Number(l.registration_fee||0)===0).length;
+  const mpPays=payments.filter(p=>p.channel?.includes('M-Pesa')).reduce((s,p)=>s+Number(p.amount),0);
   el.innerHTML=`
   <div class="sec-hd"><div class="sec-title">Financial <span>Reports</span></div><button class="btn btn-out btn-sm" onclick="window.print()">⊞ Print</button></div>
   <div class="sg">
     <div class="sc"><div class="sc-lbl">Total Disbursed</div><div class="sc-val" style="font-size:17px">${ksh(td)}</div></div>
     <div class="sc gn"><div class="sc-lbl">Total Collected</div><div class="sc-val" style="font-size:17px">${ksh(tc)}</div></div>
-    <div class="sc"><div class="sc-lbl">Fees Revenue</div><div class="sc-val" style="font-size:17px">${ksh(tf)}</div></div>
+    <div class="sc"><div class="sc-lbl">Processing Fees</div><div class="sc-val" style="font-size:17px">${ksh(tpf)}</div><div class="sc-sub">All ${loans.length} loans</div></div>
+    <div class="sc sa"><div class="sc-lbl">Registration Fees</div><div class="sc-val" style="font-size:17px">${ksh(trf)}</div><div class="sc-sub">${firstLoansCnt} new · ${repeatLoansCnt} repeat (KES 0)</div></div>
     <div class="sc pu"><div class="sc-lbl">Interest Revenue</div><div class="sc-val" style="font-size:17px">${ksh(ti)}</div></div>
     <div class="sc gn"><div class="sc-lbl">M-Pesa Collections</div><div class="sc-val" style="font-size:17px">${ksh(mpPays)}</div><div class="sc-sub">${tc>0?Math.round(mpPays/tc*100):0}% of total</div></div>
     <div class="sc"><div class="sc-lbl">Total Customers</div><div class="sc-val">${customers.length}</div></div>
   </div>
   <div class="card"><div class="card-hd"><span class="card-hd-t">P&amp;L Summary</span></div><div class="card-body"><div class="sbox">
     <div class="sr"><span class="muted">Capital Disbursed</span><span>${ksh(td)}</span></div>
-    <div class="sr"><span class="muted">Fees Income</span><span class="grn">${ksh(tf)}</span></div>
+    <div class="sr"><span class="muted">Registration Fees</span><span class="grn">${ksh(trf)} <span style="font-size:10px;color:var(--text3)">(${firstLoansCnt} first loans × KES 200; ${repeatLoansCnt} repeat = KES 0)</span></span></div>
+    <div class="sr"><span class="muted">Processing Fees</span><span class="grn">${ksh(tpf)}</span></div>
     <div class="sr"><span class="muted">Interest Income</span><span class="grn">${ksh(ti)}</span></div>
     <div class="sr"><span class="muted">Total Payments Received</span><span class="grn">${ksh(tc)}</span></div>
     <div class="sr"><span>Net Position</span><span>${ksh(tc-td+tf)}</span></div>
@@ -1609,7 +1618,14 @@ PANEL_RENDERERS['analytics']=async function(el){
   const totalDisbursed=loans.reduce((s,l)=>s+Number(l.principal),0);
   const totalCollected=payments.reduce((s,p)=>s+Number(p.amount),0);
   const totalInterest=loans.reduce((s,l)=>s+Number(l.interest||0),0);
-  const totalFees=loans.reduce((s,l)=>s+Number(l.registration_fee||0)+Number(l.processing_fee||0),0);
+  // Split fees: registration fee is 200 for first loan, 0 for repeats (stored correctly per loan in DB).
+  // Processing fee varies by principal (stored per loan in DB).
+  const totalRegFees=loans.reduce((s,l)=>s+Number(l.registration_fee||0),0);
+  const totalProcFees=loans.reduce((s,l)=>s+Number(l.processing_fee||0),0);
+  const totalFees=totalRegFees+totalProcFees;
+  // Count first-time vs repeat loans (registration_fee>0 means first loan, 0 means repeat)
+  const firstLoansCount=loans.filter(l=>Number(l.registration_fee||0)>0).length;
+  const repeatLoansCount=loans.filter(l=>Number(l.registration_fee||0)===0).length;
 
   // ── Monthly profit buckets ──────────────────────────────
   // First period: 11 May 2026 – 31 May 2026 (Month 0 = "May 11–31")
@@ -1623,21 +1639,28 @@ PANEL_RENDERERS['analytics']=async function(el){
     return new Date(yr,mo,1).toLocaleDateString('en-KE',{month:'long',year:'numeric'});
   }
   const monthMap={};
-  // Tally loan disbursements by month (use start_date)
+  // Tally loan disbursements by month (use start_date).
+  // Fees are read directly from the DB columns which are set correctly at loan creation:
+  //   registration_fee = 200 for first-ever loan, 0 for repeat customers.
+  //   processing_fee   = rate-card value for that principal.
   loans.forEach(l=>{
     const bk=getMonthBucket(l.start_date||new Date().toISOString().slice(0,10));
-    if(!monthMap[bk])monthMap[bk]={loans:0,disbursed:0,collected:0,interest:0,fees:0,cleared:0,overdue:0};
+    if(!monthMap[bk])monthMap[bk]={loans:0,disbursed:0,collected:0,interest:0,regFees:0,procFees:0,cleared:0,overdue:0,firstLoans:0,repeatLoans:0};
     monthMap[bk].loans++;
     monthMap[bk].disbursed+=Number(l.principal||0);
     monthMap[bk].interest+=Number(l.interest||0);
-    monthMap[bk].fees+=Number(l.registration_fee||0)+Number(l.processing_fee||0);
+    // Store reg and processing fees separately so the breakdown is transparent
+    monthMap[bk].regFees+=Number(l.registration_fee||0);
+    monthMap[bk].procFees+=Number(l.processing_fee||0);
+    if(Number(l.registration_fee||0)>0)monthMap[bk].firstLoans++;
+    else monthMap[bk].repeatLoans++;
     if(l.status==='paid')monthMap[bk].cleared++;
     if(l.status==='overdue')monthMap[bk].overdue++;
   });
   // Tally actual payments by month (use paid_at)
   payments.forEach(p=>{
     const bk=getMonthBucket(p.paid_at||new Date().toISOString().slice(0,10));
-    if(!monthMap[bk])monthMap[bk]={loans:0,disbursed:0,collected:0,interest:0,fees:0,cleared:0,overdue:0};
+    if(!monthMap[bk])monthMap[bk]={loans:0,disbursed:0,collected:0,interest:0,regFees:0,procFees:0,cleared:0,overdue:0,firstLoans:0,repeatLoans:0};
     monthMap[bk].collected+=Number(p.amount||0);
   });
   // Sort months chronologically
@@ -1646,14 +1669,19 @@ PANEL_RENDERERS['analytics']=async function(el){
   const sortedMonths=[...monthOrder.filter(k=>monthMap[k]),...otherMonths];
   const monthRows=sortedMonths.map(m=>{
     const d=monthMap[m];
-    const profit=d.collected;// profit = money actually collected (principal repayments + interest embedded)
-    const expectedTotal=d.disbursed+(d.interest+d.fees);// what should be repaid
+    const totalFeesRow=d.regFees+d.procFees;
+    const expectedTotal=d.disbursed+(d.interest+totalFeesRow);
+    // Fees tooltip: shows reg fee + processing fee split + loan type breakdown
+    const feesTooltip=`Reg: ${kshS(d.regFees)} (${d.firstLoans} new) + Proc: ${kshS(d.procFees)} (${d.repeatLoans} repeat, no reg fee)`;
     return`<tr>
       <td><b>${m}</b></td>
       <td class="mono gold">${ksh(d.disbursed)}</td>
       <td class="mono grn">${ksh(d.collected)}</td>
-      <td class="mono" style="color:var(--sap3)">${ksh(d.fees)}</td>
-      <td>${d.loans}</td>
+      <td class="mono" style="color:var(--sap3)" title="${feesTooltip}">
+        ${ksh(totalFeesRow)}
+        <div style="font-size:9px;color:var(--text3);margin-top:2px">Reg ${kshS(d.regFees)} + Proc ${kshS(d.procFees)}</div>
+      </td>
+      <td>${d.loans}<div style="font-size:9px;color:var(--text3)">${d.firstLoans} new · ${d.repeatLoans} repeat</div></td>
       <td><span class="bdg b-paid" style="font-size:9px">${d.cleared} cleared</span>&nbsp;<span class="bdg b-ov" style="font-size:9px">${d.overdue} overdue</span></td>
     </tr>`;
   }).join('');
@@ -1669,12 +1697,13 @@ PANEL_RENDERERS['analytics']=async function(el){
   <div class="sg">
     <div class="sc"><div class="sc-lbl">Total Disbursed</div><div class="sc-val" style="font-size:17px">${ksh(totalDisbursed)}</div><div class="sc-sub">Loan principal issued</div></div>
     <div class="sc gn"><div class="sc-lbl">Total Collected</div><div class="sc-val" style="font-size:17px">${ksh(totalCollected)}</div><div class="sc-sub">All payments received</div></div>
-    <div class="sc sa"><div class="sc-lbl">Fees & Interest</div><div class="sc-val" style="font-size:17px">${ksh(totalFees)}</div><div class="sc-sub">Registration + processing</div></div>
+    <div class="sc sa"><div class="sc-lbl">Processing Fees</div><div class="sc-val" style="font-size:17px">${ksh(totalProcFees)}</div><div class="sc-sub">All loans (new + repeat)</div></div>
+    <div class="sc pu"><div class="sc-lbl">Registration Fees</div><div class="sc-val" style="font-size:17px">${ksh(totalRegFees)}</div><div class="sc-sub">${firstLoansCount} first loans · ${repeatLoansCount} repeat (KES 0)</div></div>
     <div class="sc"><div class="sc-lbl">Net Outstanding</div><div class="sc-val" style="font-size:17px">${ksh(Math.max(0,totalDisbursed-totalCollected))}</div><div class="sc-sub">Yet to be recovered</div></div>
   </div>
-  <div class="card"><div class="card-hd"><span class="card-hd-t">📅 Monthly Breakdown</span><span style="font-size:10px;color:var(--text3)">Loans issued & payments collected by period</span></div><div class="card-body">
+  <div class="card"><div class="card-hd"><span class="card-hd-t">📅 Monthly Breakdown</span><span style="font-size:10px;color:var(--text3)">Fees = Reg fee (KES 200, first loans only) + Processing fee (all loans). Repeat customers pay processing fee only.</span></div><div class="card-body">
     <div class="tw"><table class="dtbl">
-      <thead><tr><th>Period</th><th>Disbursed</th><th>Collected</th><th>Fees</th><th>Loans</th><th>Status</th></tr></thead>
+      <thead><tr><th>Period</th><th>Disbursed</th><th>Collected</th><th>Fees (Reg + Proc)</th><th>Loans</th><th>Status</th></tr></thead>
       <tbody>${monthRows||'<tr><td colspan="6" style="text-align:center;color:var(--text3)">No data yet</td></tr>'}</tbody>
     </table></div>
   </div></div>
@@ -1811,7 +1840,7 @@ async function openLoan(){
   const customers=await getCustomers();
   const s=document.getElementById('ml-cust');
   s.innerHTML='<option value="">Select customer…</option>'+customers.map(c=>`<option value="${c.id}" data-phone="${c.mpesa_number||c.phone}">${c.full_name} — ${c.phone}</option>`).join('');
-  s.onchange=()=>{const opt=s.options[s.selectedIndex];document.getElementById('ml-mpesa').value=opt.dataset.phone||'';};
+  s.onchange=()=>{const opt=s.options[s.selectedIndex];document.getElementById('ml-mpesa').value=opt.dataset.phone||'';loanPreview();};
   const ps=document.getElementById('ml-p');
   ps.innerHTML='<option value="">Select…</option>'+RC.map(r=>`<option value="${r.p}">KES ${kshS(r.p)}</option>`).join('');
   document.getElementById('ml-date').value=today();
@@ -1820,12 +1849,30 @@ async function openLoan(){
   openModal('m-loan');
 }
 function quickLoan(custId,name,mpesa){openLoan().then(()=>{setTimeout(()=>{document.getElementById('ml-cust').value=custId;document.getElementById('ml-mpesa').value=mpesa||'';},100);});}
-function loanPreview(){
-  const p=parseInt(document.getElementById('ml-p')?.value),w=parseInt(document.getElementById('ml-i')?.value),prev=document.getElementById('lprev');
+async function loanPreview(){
+  const p=parseInt(document.getElementById('ml-p')?.value),w=parseInt(document.getElementById('ml-i')?.value),cid=document.getElementById('ml-cust')?.value,prev=document.getElementById('lprev');
   if(!p||!w){prev.classList.add('hidden');return;}
   prev.classList.remove('hidden');
   const r=gRate(p);
-  document.getElementById('lp-p').textContent=ksh(p);document.getElementById('lp-pf').textContent=ksh(r.pf);document.getElementById('lp-i').textContent=ksh(r.i[w]);document.getElementById('lp-t').textContent=ksh(totalFor(p,w));document.getElementById('lp-w').textContent=ksh(weeklyFor(p,w));
+  // Registration fee: KES 200 for first-ever loan, KES 0 for repeat customers.
+  // Look up prior loans for the selected customer to determine which applies.
+  let regFee=200;
+  const rfEl=document.getElementById('lp-rf');
+  if(cid){
+    try{
+      const prior=await getLoansByCustomer(cid);
+      regFee=prior.length>0?0:200;
+    }catch(e){regFee=200;}
+  }
+  if(rfEl){
+    rfEl.textContent=regFee===0?'KES 0 — Waived (repeat customer)':'KES 200';
+    rfEl.style.color=regFee===0?'var(--grn3)':'var(--text)';
+  }
+  document.getElementById('lp-p').textContent=ksh(p);
+  document.getElementById('lp-pf').textContent=ksh(r.pf);
+  document.getElementById('lp-i').textContent=ksh(r.i[w]);
+  document.getElementById('lp-t').textContent=ksh(totalFor(p,w));
+  document.getElementById('lp-w').textContent=ksh(weeklyFor(p,w));
 }
 async function saveLoan(){
   const cid=document.getElementById('ml-cust').value,p=parseInt(document.getElementById('ml-p').value),w=parseInt(document.getElementById('ml-i').value),d=document.getElementById('ml-date').value;
