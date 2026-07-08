@@ -1635,18 +1635,36 @@ PANEL_RENDERERS['reports']=async function(el){
 // ═══════════════════════════════════════
 PANEL_RENDERERS['analytics']=async function(el){
   el.innerHTML=loading();
-  const [loans,payments]=await Promise.all([getLoans(),SB.from('payments').select('*,loans(loan_number,registration_fee,processing_fee,weekly_instalment,interest,principal,start_date,customers(full_name))').order('paid_at').then(r=>r.data||[])]);
+  const [loans,payments]=await Promise.all([getLoans(),SB.from('payments').select('*,loans(loan_number,registration_fee,processing_fee,weekly_instalment,interest,principal,total_repayable,start_date,customers(full_name))').order('paid_at').then(r=>r.data||[])]);
   const byW={4:0,6:0,8:0,10:0,12:0};
   loans.forEach(l=>{if(byW[l.instalments]!==undefined)byW[l.instalments]++;});
   const mx=Math.max(...Object.values(byW),1);
   const totalDisbursed=loans.reduce((s,l)=>s+Number(l.principal),0);
   const totalCollected=payments.reduce((s,p)=>s+Number(p.amount),0);
-  const totalInterest=loans.reduce((s,l)=>s+Number(l.interest||0),0);
+  // ── Interest earned — CASH BASIS ─────────────────────────
+  // A loan's `interest` field is a flat amount baked into total_repayable,
+  // not something that accrues day by day. So the honest way to say
+  // "how much interest have we actually EARNED" is: every shilling a
+  // customer pays is a fixed mix of principal-recovery and
+  // interest-recovery, in the ratio (loan.interest ÷ loan.total_repayable).
+  // Summing that ratio × payment.amount across every payment — whichever
+  // month it actually landed in — gives real, collected interest income,
+  // instead of booking a loan's entire interest the moment it's disbursed
+  // (which used to overstate the disbursement month and understate every
+  // month after it, including catch-up collections on overdue accounts).
+  function interestPortionOf(payment){
+    const l=payment.loans;
+    if(!l||!l.total_repayable)return 0;
+    const ratio=Number(l.interest||0)/Number(l.total_repayable||1);
+    return Number(payment.amount||0)*ratio;
+  }
+  const totalInterest=payments.reduce((s,p)=>s+interestPortionOf(p),0);
   // Split fees: registration fee is 200 for first loan, 0 for repeats (stored correctly per loan in DB).
   // Processing fee varies by principal (stored per loan in DB).
   const totalRegFees=loans.reduce((s,l)=>s+Number(l.registration_fee||0),0);
   const totalProcFees=loans.reduce((s,l)=>s+Number(l.processing_fee||0),0);
   const totalFees=totalRegFees+totalProcFees;
+  const totalEarnings=totalFees+totalInterest;
   // Count first-time vs repeat loans (registration_fee>0 means first loan, 0 means repeat)
   const firstLoansCount=loans.filter(l=>Number(l.registration_fee||0)>0).length;
   const repeatLoansCount=loans.filter(l=>Number(l.registration_fee||0)===0).length;
@@ -1672,7 +1690,9 @@ PANEL_RENDERERS['analytics']=async function(el){
     if(!monthMap[bk])monthMap[bk]={loans:0,disbursed:0,collected:0,interest:0,regFees:0,procFees:0,cleared:0,overdue:0,firstLoans:0,repeatLoans:0};
     monthMap[bk].loans++;
     monthMap[bk].disbursed+=Number(l.principal||0);
-    monthMap[bk].interest+=Number(l.interest||0);
+    // NOTE: interest is intentionally NOT added here. It's booked in the
+    // payments loop below, on a cash basis, in whichever month it was
+    // actually collected — not dumped entirely into the disbursement month.
     // Store reg and processing fees separately so the breakdown is transparent
     monthMap[bk].regFees+=Number(l.registration_fee||0);
     monthMap[bk].procFees+=Number(l.processing_fee||0);
@@ -1681,11 +1701,15 @@ PANEL_RENDERERS['analytics']=async function(el){
     if(l.status==='paid')monthMap[bk].cleared++;
     if(l.status==='overdue')monthMap[bk].overdue++;
   });
-  // Tally actual payments by month (use paid_at)
+  // Tally actual payments by month (use paid_at), and prorate each payment's
+  // interest share into that same month — this is the cash-basis interest
+  // figure, and it's the one that should be trusted for "how much did we
+  // actually earn this month."
   payments.forEach(p=>{
     const bk=getMonthBucket(p.paid_at||new Date().toISOString().slice(0,10));
     if(!monthMap[bk])monthMap[bk]={loans:0,disbursed:0,collected:0,interest:0,regFees:0,procFees:0,cleared:0,overdue:0,firstLoans:0,repeatLoans:0};
     monthMap[bk].collected+=Number(p.amount||0);
+    monthMap[bk].interest+=interestPortionOf(p);
   });
   // Sort months chronologically
   const monthOrder=['May 11–31, 2026'];
@@ -1694,17 +1718,19 @@ PANEL_RENDERERS['analytics']=async function(el){
   const monthRows=sortedMonths.map(m=>{
     const d=monthMap[m];
     const totalFeesRow=d.regFees+d.procFees;
-    const expectedTotal=d.disbursed+(d.interest+totalFeesRow);
+    const monthEarnings=totalFeesRow+d.interest;
     // Fees tooltip: shows reg fee + processing fee split + loan type breakdown
     const feesTooltip=`Reg: ${kshS(d.regFees)} (${d.firstLoans} new) + Proc: ${kshS(d.procFees)} (${d.repeatLoans} repeat, no reg fee)`;
     return`<tr>
       <td><b>${m}</b></td>
       <td class="mono gold">${ksh(d.disbursed)}</td>
       <td class="mono grn">${ksh(d.collected)}</td>
+      <td class="mono" style="color:var(--sap3)" title="Cash-basis: sum of (payment amount × loan's interest/total_repayable ratio) for every payment received this month, from any loan.">${ksh(d.interest)}</td>
       <td class="mono" style="color:var(--sap3)" title="${feesTooltip}">
         ${ksh(totalFeesRow)}
         <div style="font-size:9px;color:var(--text3);margin-top:2px">Reg ${kshS(d.regFees)} + Proc ${kshS(d.procFees)}</div>
       </td>
+      <td class="mono gold" style="font-weight:700">${ksh(monthEarnings)}</td>
       <td>${d.loans}<div style="font-size:9px;color:var(--text3)">${d.firstLoans} new · ${d.repeatLoans} repeat</div></td>
       <td><span class="bdg b-paid" style="font-size:9px">${d.cleared} cleared</span>&nbsp;<span class="bdg b-ov" style="font-size:9px">${d.overdue} overdue</span></td>
     </tr>`;
@@ -1721,14 +1747,16 @@ PANEL_RENDERERS['analytics']=async function(el){
   <div class="sg">
     <div class="sc"><div class="sc-lbl">Total Disbursed</div><div class="sc-val" style="font-size:17px">${ksh(totalDisbursed)}</div><div class="sc-sub">Loan principal issued</div></div>
     <div class="sc gn"><div class="sc-lbl">Total Collected</div><div class="sc-val" style="font-size:17px">${ksh(totalCollected)}</div><div class="sc-sub">All payments received</div></div>
+    <div class="sc sa"><div class="sc-lbl">Interest Earned</div><div class="sc-val" style="font-size:17px">${ksh(totalInterest)}</div><div class="sc-sub" title="Prorated per payment: amount × (loan interest ÷ total repayable). Reflects money actually collected, not the full interest booked at disbursement.">Cash-basis, from actual payments</div></div>
     <div class="sc sa"><div class="sc-lbl">Processing Fees</div><div class="sc-val" style="font-size:17px">${ksh(totalProcFees)}</div><div class="sc-sub">All loans (new + repeat)</div></div>
     <div class="sc pu"><div class="sc-lbl">Registration Fees</div><div class="sc-val" style="font-size:17px">${ksh(totalRegFees)}</div><div class="sc-sub">${firstLoansCount} first loans · ${repeatLoansCount} repeat (KES 0)</div></div>
+    <div class="sc gn"><div class="sc-lbl">Total Earnings</div><div class="sc-val" style="font-size:17px">${ksh(totalEarnings)}</div><div class="sc-sub">Interest + Reg + Processing fees</div></div>
     <div class="sc"><div class="sc-lbl">Net Outstanding</div><div class="sc-val" style="font-size:17px">${ksh(Math.max(0,totalDisbursed-totalCollected))}</div><div class="sc-sub">Yet to be recovered</div></div>
   </div>
-  <div class="card"><div class="card-hd"><span class="card-hd-t">📅 Monthly Breakdown</span><span style="font-size:10px;color:var(--text3)">Fees = Reg fee (KES 200, first loans only) + Processing fee (all loans). Repeat customers pay processing fee only.</span></div><div class="card-body">
+  <div class="card"><div class="card-hd"><span class="card-hd-t">📅 Monthly Breakdown</span><span style="font-size:10px;color:var(--text3)">Interest = cash actually collected this month (prorated per payment). Fees = Reg (KES 200, first loans only) + Processing, booked in the disbursement month. Total Earnings = Fees + Interest.</span></div><div class="card-body">
     <div class="tw"><table class="dtbl">
-      <thead><tr><th>Period</th><th>Disbursed</th><th>Collected</th><th>Fees (Reg + Proc)</th><th>Loans</th><th>Status</th></tr></thead>
-      <tbody>${monthRows||'<tr><td colspan="6" style="text-align:center;color:var(--text3)">No data yet</td></tr>'}</tbody>
+      <thead><tr><th>Period</th><th>Disbursed</th><th>Collected</th><th>Interest Earned</th><th>Fees (Reg + Proc)</th><th>Total Earnings</th><th>Loans</th><th>Status</th></tr></thead>
+      <tbody>${monthRows||'<tr><td colspan="8" style="text-align:center;color:var(--text3)">No data yet</td></tr>'}</tbody>
     </table></div>
   </div></div>
   <div class="card"><div class="card-hd"><span class="card-hd-t">Loans by Term</span></div><div class="card-body">
