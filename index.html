@@ -955,8 +955,10 @@ function computeLoanStatus(loan){
   // Fully cleared takes priority over everything else.
   if(total>0 && paid>=total)return 'paid';
   if(!loan.start_date)return loan.status||'active';
+  const startMs=new Date(loan.start_date).getTime();
+  if(isNaN(startMs))return loan.status||'active'; // unparseable/legacy date value — don't silently mark active
   const msPerWeek=7*24*3600*1000;
-  const weeksElapsed=Math.floor((Date.now()-new Date(loan.start_date).getTime())/msPerWeek);
+  const weeksElapsed=Math.floor((Date.now()-startMs)/msPerWeek);
   if(weeksElapsed<=0)return 'active'; // still inside the first 7-day window
   const wk=Number(loan.weekly_instalment)||weeklyFor(loan.principal,loan.instalments);
   const weeksDue=Math.min(weeksElapsed,loan.instalments||weeksElapsed);
@@ -969,11 +971,34 @@ function computeLoanStatus(loan){
 // reflect partial payments accurately. It also recomputes loan.status
 // live via computeLoanStatus() so overdue accounts always show up
 // correctly regardless of what was last stored in the database.
+// Human-readable breakdown of the overdue calculation for a single loan —
+// used by the loan detail view so anyone can see exactly why an account
+// is (or isn't) flagged, without needing to inspect the database.
+function overdueBreakdown(loan){
+  const total=Number(loan.total_repayable||0);
+  const paid=Number(loan.amount_paid||0);
+  if(!loan.start_date)return{weeksElapsed:null,expectedByNow:null,paid,shortfall:null,note:'⚠ No loan date recorded on this loan — overdue cannot be computed.'};
+  const startMs=new Date(loan.start_date).getTime();
+  if(isNaN(startMs))return{weeksElapsed:null,expectedByNow:null,paid,shortfall:null,note:`⚠ Loan date ("${loan.start_date}") isn't a recognisable date — overdue cannot be computed.`};
+  const msPerWeek=7*24*3600*1000;
+  const weeksElapsed=Math.floor((Date.now()-startMs)/msPerWeek);
+  const wk=Number(loan.weekly_instalment)||weeklyFor(loan.principal,loan.instalments);
+  const weeksDue=Math.max(0,Math.min(weeksElapsed,loan.instalments||weeksElapsed));
+  const expectedByNow=Math.min(weeksDue*wk,total||Infinity);
+  return{weeksElapsed,expectedByNow,paid,shortfall:Math.max(0,expectedByNow-paid),note:null};
+}
+
 async function attachPaymentTotals(loans){
   if(!loans||!loans.length)return loans;
   const ids=loans.map(l=>l.id);
   const{data,error}=await SB.from('payments').select('loan_id,amount').in('loan_id',ids);
-  if(error){console.error(error);return loans;}
+  if(error){
+    console.error('attachPaymentTotals: payments query failed, falling back to paid_count-based status',error);
+    // Still recompute status (via the paid_count fallback inside computeLoanStatus)
+    // instead of leaving whatever was last stored in the DB untouched.
+    loans.forEach(l=>{l.status=computeLoanStatus(l);});
+    return loans;
+  }
   const map={};
   (data||[]).forEach(p=>{map[p.loan_id]=(map[p.loan_id]||0)+Number(p.amount||0);});
   loans.forEach(l=>{l.amount_paid=map[l.id]||0;l.status=computeLoanStatus(l);});
@@ -1899,12 +1924,21 @@ async function viewLoan(id){
   l.amount_paid=pays.reduce((s,p)=>s+Number(p.amount||0),0);
   l.status=computeLoanStatus(l);
   const out=getOutstandingCalc(l),wk=weeklyFor(l.principal,l.instalments);
+  const bd=overdueBreakdown(l);
+  const diagHtml=bd.note
+    ? `<div class="abox warn" style="margin-top:10px;font-size:11px">${bd.note}</div>`
+    : `<div class="abox ${l.status==='overdue'?'danger':'success'}" style="margin-top:10px;font-size:11px;line-height:1.7">
+        <b>Overdue check</b> · Loan date: ${fmt(l.start_date)} → ${bd.weeksElapsed} full week(s) elapsed<br>
+        Expected paid by now: ${ksh(bd.expectedByNow)} · Actually paid: ${ksh(bd.paid)}<br>
+        ${bd.shortfall>0?`<b class="ruby">Shortfall: ${ksh(bd.shortfall)} → OVERDUE</b>`:'<b class="grn">Caught up → not overdue</b>'}
+      </div>`;
   let dots='';
   for(let i=1;i<=l.instalments;i++){const cls=i<=l.paid_count?'paid':i===l.paid_count+1&&l.status!=='paid'?'cur':'';dots+=`<div class="wd ${cls}">${i}</div>`;}
   document.getElementById('ai-mc').innerHTML=`
     <div class="lcard2 ${l.status}"><div style="display:flex;justify-content:space-between"><div><div class="lc2-id">#${l.loan_number} · ${l.purpose||'—'}</div><div class="lc2-amt">${ksh(l.principal)}</div></div><span class="bdg ${l.status==='active'?'b-act':l.status==='paid'?'b-paid':'b-ov'}">${l.status}</span></div>
     <div class="lc2-meta"><div class="lc2-mi"><label>Customer</label><span>${l.customers?.full_name||'—'}</span></div><div class="lc2-mi"><label>Phone</label><span>${l.customers?.phone||'—'}</span></div><div class="lc2-mi"><label>Weekly</label><span>${ksh(wk)}</span></div><div class="lc2-mi"><label>Outstanding</label><span class="${l.status==='overdue'?'ruby':''}">${ksh(out)}</span></div><div class="lc2-mi"><label>Collection Day</label><span>${l.collection_day||'—'}</span></div><div class="lc2-mi"><label>End Date</label><span>${fmt(l.due_date)}</span></div></div>
     <div class="wdots">${dots}</div></div>
+    ${diagHtml}
     <div style="font-size:10px;letter-spacing:2px;text-transform:uppercase;color:var(--text3);margin:14px 0 8px;font-weight:700">PAYMENT HISTORY</div>
     ${pays.length===0?'<div class="muted">No payments recorded yet</div>':pays.map(p=>`<div class="er"><span class="mono muted" style="min-width:80px">${fmts(p.paid_at)}</span><span class="grn mono">${ksh(p.amount)}</span><span class="bdg b-act">${p.channel}</span><span class="muted" style="font-size:10px">${p.mpesa_receipt||''}</span></div>`).join('')}
     ${l.status!=='paid'?`<div style="margin-top:14px"><button class="btn btn-grn" onclick="openPayModal('${l.id}','${l.loan_number}');closeModal('m-ai')">⬡ Record Payment</button></div>`:''}`;
