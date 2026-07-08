@@ -2078,9 +2078,14 @@ function parseImportDate(val){
   return null;
 }
 
-// ─── COMPUTE INSTALLMENT STATUS ───────────────────────────────
-// Derives paid count, overdue weeks, cleared status from raw excel values
-function computeLoanStatus(row, todayStr){
+// ─── COMPUTE INSTALLMENT STATUS (Excel import preview only) ───
+// Derives paid count, overdue weeks, cleared status from raw excel values.
+// Renamed to deriveExcelInstalmentStatus so it can never collide with the
+// live computeLoanStatus(loan) used everywhere else in the app — a prior
+// name clash here silently broke live overdue detection for every
+// directly-entered loan, since this Excel-only function (returning a
+// detail object, not a plain status string) was overwriting it.
+function deriveExcelInstalmentStatus(row, todayStr){
   const wkAmt=row.instamt;
   const numWeeks=row.w;
   const startDateStr=row.start;
@@ -2165,7 +2170,7 @@ function parseExcelFile(file){
             return v;
           });
           while(rawInstalments.length<numWeeks)rawInstalments.push(null);
-          const loanData=computeLoanStatus({instamt,w:numWeeks,start:startDate,rawInstalments},todayStr);
+          const loanData=deriveExcelInstalmentStatus({instamt,w:numWeeks,start:startDate,rawInstalments},todayStr);
           parsed.push({
             nid:g('nid'),name:g('name'),phone:normalizePhone(g('phone')),biz:g('biz'),bsloc:g('bsloc'),res:g('res'),
             p:gn('p'),instamt,w:numWeeks,start:startDate,day:g('day'),
