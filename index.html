@@ -150,6 +150,7 @@ body{font-family:'Outfit',sans-serif;background:var(--ink);color:var(--text);min
 .lp-highlight{color:var(--gold2);font-weight:700;}
 @media(max-width:900px){
   .lp-hero{grid-template-columns:1fr;}
+  .lcard-col{order:-1;margin-bottom:22px;}
   .lp-trust{flex-direction:column;}
   .lp-footer-content{flex-direction:column;}
 }
@@ -576,14 +577,11 @@ body{font-family:'Outfit',sans-serif;background:var(--ink);color:var(--text);min
 
       <div class="lcard-col">
         <div class="lcard">
-          <!-- Role Tabs -->
-          <div class="role-tabs">
-            <div class="role-tab" id="tab-admin" onclick="selectRole('admin')">Admin</div>
-            <div class="role-tab" id="tab-sales" onclick="selectRole('sales')">Staff</div>
-            <div class="role-tab" id="tab-customer" onclick="selectRole('customer')">Customer</div>
-          </div>
           <div class="lcard-inner">
-            <div id="role-hint" class="role-hint rh-admin">Administrator Access</div>
+            <div class="lc-logo">
+              <div class="name gold">Sign In</div>
+              <div class="sub">One login for everyone</div>
+            </div>
             <div class="iw"><label>Email Address</label><input type="email" id="l-email" placeholder="you@allyseinvestments.ke"/></div>
             <div class="iw"><label>Password</label><input type="password" id="l-pw" placeholder="••••••••"/></div>
             <div id="l-err" class="abox danger hidden"></div>
@@ -938,9 +936,39 @@ function getOutstandingCalc(loan){
   return Math.max(0,loan.total_repayable-paid);
 }
 
+// ═══════════════════════════════════════
+// OVERDUE LOGIC
+// Business rule: customers are expected to clear one weekly instalment
+// every 7 days (some pay in smaller/daily bits, but what matters is the
+// CUMULATIVE amount paid vs. the cumulative amount that should have been
+// paid by now). The moment a full week elapses since the loan's
+// start_date without the customer's total payments catching up to that
+// week's cumulative instalment, the loan is OVERDUE — even if they've
+// made partial payments toward it. This is computed live from
+// start_date + amount actually paid, so it stays correct every day
+// without anyone having to manually flag an account, and it works
+// identically for loans entered directly as for loans imported from
+// Excel.
+function computeLoanStatus(loan){
+  const total=Number(loan.total_repayable||0);
+  const paid=(loan.amount_paid!=null)?Number(loan.amount_paid):(weeklyFor(loan.principal,loan.instalments)*(loan.paid_count||0));
+  // Fully cleared takes priority over everything else.
+  if(total>0 && paid>=total)return 'paid';
+  if(!loan.start_date)return loan.status||'active';
+  const msPerWeek=7*24*3600*1000;
+  const weeksElapsed=Math.floor((Date.now()-new Date(loan.start_date).getTime())/msPerWeek);
+  if(weeksElapsed<=0)return 'active'; // still inside the first 7-day window
+  const wk=Number(loan.weekly_instalment)||weeklyFor(loan.principal,loan.instalments);
+  const weeksDue=Math.min(weeksElapsed,loan.instalments||weeksElapsed);
+  const expectedByNow=Math.min(weeksDue*wk,total||Infinity);
+  return paid<expectedByNow ? 'overdue' : 'active';
+}
+
 // Fetches the sum of all payments per loan_id for a batch of loans in one
 // query and attaches it as loan.amount_paid so getOutstandingCalc() can
-// reflect partial payments accurately.
+// reflect partial payments accurately. It also recomputes loan.status
+// live via computeLoanStatus() so overdue accounts always show up
+// correctly regardless of what was last stored in the database.
 async function attachPaymentTotals(loans){
   if(!loans||!loans.length)return loans;
   const ids=loans.map(l=>l.id);
@@ -948,7 +976,7 @@ async function attachPaymentTotals(loans){
   if(error){console.error(error);return loans;}
   const map={};
   (data||[]).forEach(p=>{map[p.loan_id]=(map[p.loan_id]||0)+Number(p.amount||0);});
-  loans.forEach(l=>{l.amount_paid=map[l.id]||0;});
+  loans.forEach(l=>{l.amount_paid=map[l.id]||0;l.status=computeLoanStatus(l);});
   return loans;
 }
 
@@ -995,33 +1023,10 @@ function showConfig(){
 }
 
 // ═══════════════════════════════════════
-// LOGIN ROLE TABS
-// ═══════════════════════════════════════
-let selectedRole = 'admin';
-const ROLE_CONFIG = {
-  admin:   {label:'Administrator Access', hint:'rh-admin', btnClass:'btn-pri-ruby', placeholder:'admin@allyseinvestments.ke'},
-  sales:   {label:'Sales / Loan Officer', hint:'rh-sales', btnClass:'btn-pri-sap',  placeholder:'officer@allyseinvestments.ke'},
-  customer:{label:'Customer Portal',      hint:'rh-customer', btnClass:'btn-pri', placeholder:'customer@example.com'},
-};
-
-function selectRole(role){
-  selectedRole = role;
-  document.querySelectorAll('.role-tab').forEach(t=>t.className='role-tab');
-  const tabMap={admin:'tab-admin',sales:'tab-sales',customer:'tab-customer'};
-  const activeClass={admin:'active-admin',sales:'active-sales',customer:'active-customer'};
-  document.getElementById(tabMap[role]).className='role-tab '+activeClass[role];
-  const cfg=ROLE_CONFIG[role];
-  const hint=document.getElementById('role-hint');
-  hint.textContent=cfg.label;
-  hint.className='role-hint '+cfg.hint;
-  const btn=document.getElementById('l-btn');
-  btn.className='btn '+cfg.btnClass;
-  document.getElementById('l-email').placeholder=cfg.placeholder;
-  document.getElementById('l-err').classList.add('hidden');
-}
-
-// ═══════════════════════════════════════
-// AUTH
+// AUTH — single unified login. The system determines whether the
+// account is admin, loan officer/staff, or customer automatically
+// from the profile record after authenticating; the person never
+// has to pick a portal/tab themselves.
 // ═══════════════════════════════════════
 let CU = null;
 
@@ -1039,14 +1044,8 @@ async function doLogin(){
     if(pErr||!profile){showLoginErr('Profile not found. Ask your administrator to set up your account.');await SB.auth.signOut();return;}
     if(!profile.is_active){showLoginErr('Account is inactive. Contact your administrator.');await SB.auth.signOut();return;}
 
-    // Validate role matches tab selection
-    const roleMap = {admin:'admin', sales:'loan_officer', customer:'customer'};
-    const expectedRole = roleMap[selectedRole];
-    if(expectedRole && profile.role !== expectedRole){
-      showLoginErr(`This account is a "${profile.role}" — please select the correct portal tab.`);
-      await SB.auth.signOut();return;
-    }
-
+    // Role (admin / loan_officer / customer) is read straight off the
+    // profile — no manual portal selection needed.
     CU={user:data.user,profile};
     startApp();
   }catch(e){showLoginErr('Connection error: '+e.message);}
@@ -1898,6 +1897,7 @@ async function viewLoan(id){
   if(!l)return;
   const pays=await getPayments(id);
   l.amount_paid=pays.reduce((s,p)=>s+Number(p.amount||0),0);
+  l.status=computeLoanStatus(l);
   const out=getOutstandingCalc(l),wk=weeklyFor(l.principal,l.instalments);
   let dots='';
   for(let i=1;i<=l.instalments;i++){const cls=i<=l.paid_count?'paid':i===l.paid_count+1&&l.status!=='paid'?'cur':'';dots+=`<div class="wd ${cls}">${i}</div>`;}
@@ -1931,7 +1931,7 @@ async function savePayment(){
   try{
     await createPayment({loan_id:loanId||null,amount:amt,mpesa_receipt:ref||null,channel:document.getElementById('mp-via').value,instalment_no:parseInt(document.getElementById('mp-inst').value)||null,paid_at:new Date(date).toISOString(),recorded_by:CU.user.id});
     if(loanId){
-      const{data:l}=await SB.from('loans').select('instalments,weekly_instalment,total_repayable').eq('id',loanId).single();
+      const{data:l}=await SB.from('loans').select('instalments,weekly_instalment,total_repayable,principal,start_date').eq('id',loanId).single();
       if(l){
         const{data:payRows}=await SB.from('payments').select('amount').eq('loan_id',loanId);
         const totalPaid=(payRows||[]).reduce((s,p)=>s+Number(p.amount||0),0);
@@ -1939,7 +1939,9 @@ async function savePayment(){
         // A partial payment will NOT bump this up, so progress dots / "week cleared"
         // indicators won't falsely show a week as fully paid.
         const newCount=Math.min(l.instalments,Math.floor(totalPaid/l.weekly_instalment));
-        const newStatus=totalPaid>=l.total_repayable?'paid':'active';
+        // Status uses the same overdue rule as the rest of the app: cumulative
+        // paid vs. cumulative amount due by elapsed weeks since start_date.
+        const newStatus=computeLoanStatus({...l,amount_paid:totalPaid});
         await SB.from('loans').update({paid_count:newCount,status:newStatus}).eq('id',loanId);
       }
     }
@@ -2783,8 +2785,6 @@ document.addEventListener('keydown',e=>{
 });
 
 window.addEventListener('load',async()=>{
-  // Set default role tab
-  selectRole('admin');
   setTimeout(()=>{
     document.getElementById('loading').style.opacity='0';
     setTimeout(()=>{
