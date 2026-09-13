@@ -85,9 +85,10 @@ body{font-family:'Outfit',sans-serif;background:var(--ink);color:var(--text);min
 .mpesa-btn:disabled{opacity:.5;cursor:not-allowed;}
 .mpesa-logo{font-size:18px;}
 /* RECONCILE ROW */
-.reconcile-row{display:flex;align-items:center;gap:10px;padding:10px;background:var(--ink3);border-radius:var(--r);margin-bottom:8px;}
-.reconcile-row .r-ref{font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--gold2);}
-.reconcile-row .r-amt{font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:600;color:var(--grn3);}
+.reconcile-row{display:flex;align-items:center;gap:10px;padding:10px;background:var(--ink3);border-radius:var(--r);margin-bottom:8px;cursor:pointer;transition:background .15s;}
+.reconcile-row:hover{background:var(--ink4);}
+.reconcile-row .r-ref{font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--gold2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%;}
+.reconcile-row .r-amt{font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:600;color:var(--grn3);white-space:nowrap;}
 
 
 ::-webkit-scrollbar{width:4px;height:4px}
@@ -782,34 +783,24 @@ body{font-family:'Outfit',sans-serif;background:var(--ink);color:var(--text);min
   </div>
 </div>
 
-<!-- MPESA STK PUSH MODAL -->
+<!-- M-PESA TILL PAYMENT INSTRUCTIONS MODAL -->
 <div class="overlay" id="m-stk">
   <div class="modal">
-    <div class="modal-title">💚 Pay via M-Pesa</div>
+    <div class="modal-title">💚 Pay via M-Pesa Till</div>
     <div style="text-align:center;padding:8px 0 16px">
       <div style="font-size:38px;margin-bottom:8px">💚</div>
-      <div style="font-size:13px;color:var(--text2);line-height:1.6">Enter the amount below and confirm on your phone.<br>Check the M-Pesa prompt that will appear.</div>
+      <div style="font-size:13px;color:var(--text2);line-height:1.6">Go to M-Pesa → Lipa na M-Pesa → Buy Goods and Services, then enter the details below.<br>Your loan updates automatically once payment is received.</div>
     </div>
     <input type="hidden" id="stk-loan-id"/>
     <div class="f2">
-      <div class="iw"><label>Your M-Pesa Number *</label><input id="stk-cust-phone" placeholder="0712345678"/></div>
-      <div class="iw"><label>Amount (KES) *</label><input type="number" id="stk-cust-amt" placeholder="e.g. 2500"/></div>
+      <div class="iw"><label>Till Number</label><input id="stk-till-number" readonly/></div>
+      <div class="iw"><label>Amount (KES)</label><input id="stk-cust-amt" readonly/></div>
       <div class="iw"><label>Loan Reference</label><input id="stk-cust-ref" placeholder="Auto-filled" readonly/></div>
-      <div class="iw"><label>Payment Method</label>
-        <select id="stk-method" onchange="stkMethodChanged()">
-          <option value="M-Pesa Mobile">M-Pesa Mobile (STK Push)</option>
-          <option value="M-Pesa Paybill">M-Pesa Paybill</option>
-          <option value="M-Pesa Till">M-Pesa Till</option>
-        </select>
-      </div>
-    </div>
-    <div id="stk-paybill-hint" class="abox info hidden" style="margin-top:8px;font-size:11px">
-      📲 <b>Paybill:</b> Go to M-Pesa → Lipa na M-Pesa → Pay Bill → Enter the Paybill number and your loan number as account reference.
     </div>
     <div id="stk-err" class="abox danger hidden" style="margin-top:8px"></div>
     <div class="modal-acts">
-      <button class="btn btn-out" onclick="closeModal('m-stk')">Cancel</button>
-      <button class="mpesa-btn" id="stk-cust-btn" onclick="custMpesaPay()" style="flex:1;width:auto;border-radius:var(--r);padding:10px 18px">💚 Confirm Payment</button>
+      <button class="btn btn-out" onclick="closeModal('m-stk')">Close</button>
+      <button class="mpesa-btn" id="stk-cust-btn" onclick="custMpesaPay()" style="flex:1;width:auto;border-radius:var(--r);padding:10px 18px">✓ I've Made the Payment</button>
     </div>
   </div>
 </div>
@@ -1771,43 +1762,26 @@ PANEL_RENDERERS['analytics']=async function(el){
 // ═══════════════════════════════════════
 PANEL_RENDERERS['mpesa']=async function(el){
   el.innerHTML=`
-  <div class="abox info">💚 <b>Safaricom Daraja API — Live STK Push.</b> Sends a real payment prompt to the customer's phone. Configure provider credentials as Supabase Edge Function secrets (DARAJA_CONSUMER_KEY, DARAJA_CONSUMER_SECRET, DARAJA_SHORTCODE, DARAJA_PASSKEY, DARAJA_ENV, MPESA_CALLBACK_URL).</div>
-  <div class="two-col">
-    <div class="card"><div class="card-hd"><span class="card-hd-t">STK Push — Request Payment</span></div><div class="card-body">
-      <div class="iw"><label>Customer Phone *</label><input id="stk-ph" placeholder="0712345678 or 254712345678"/></div>
-      <div class="iw"><label>Amount (KES) *</label><input type="number" id="stk-amt" placeholder="3000"/></div>
-      <div class="iw"><label>Reference / Loan Number</label><input id="stk-ref" placeholder="LN0001"/></div>
-      <div id="stk-admin-err" class="abox danger hidden" style="margin-bottom:12px"></div>
-      <button class="btn btn-grn btn-full" id="stk-admin-btn" onclick="stkPush()">💚 Send STK Push</button>
-    </div></div>
-    <div class="card"><div class="card-hd"><span class="card-hd-t">Recent M-Pesa Transactions</span></div><div class="card-body" id="mpesa-recent">${loading()}</div></div>
-  </div>`;
+  <div class="abox info">💚 <b>Safaricom Daraja C2B — Till payments.</b> Customers pay directly via M-Pesa Till; payments are matched to loans automatically. The customer's M-Pesa number is received as a hashed value (Safaricom Data Minimization) rather than a plain phone number.</div>
+  <div class="card"><div class="card-hd"><span class="card-hd-t">Recent M-Pesa Transactions</span></div><div class="card-body" id="mpesa-recent">${loading()}</div></div>`;
   const{data}=await SB.from('mpesa_transactions').select('*').order('created_at',{ascending:false}).limit(10);
   const rows=data||[];
-  document.getElementById('mpesa-recent').innerHTML=rows.length?rows.map(t=>`
-    <div class="reconcile-row">
-      <div style="flex:1">
-        <div class="r-ref">${t.phone}</div>
-        <div style="font-size:10px;color:var(--text3)">${fmt(t.created_at)} · ${t.result_desc||t.status}</div>
+  document.getElementById('mpesa-recent').innerHTML=rows.length?rows.map(t=>{
+    const name=[t.first_name,t.last_name].filter(Boolean).join(' ')||'Unknown payer';
+    const hashShort=t.phone?`${t.phone.slice(0,10)}…${t.phone.slice(-6)}`:'—';
+    return `
+    <div class="reconcile-row" onclick="navigator.clipboard&&navigator.clipboard.writeText('${t.phone||''}');toast('Hash copied','info')" title="Tap to copy full hash: ${t.phone||''}">
+      <div style="flex:1;min-width:0">
+        <div style="font-size:13px;font-weight:600;color:var(--text)">${name}</div>
+        <div class="r-ref mono" title="${t.phone||''}">${hashShort}</div>
+        <div style="font-size:10px;color:var(--text3);margin-top:2px">${fmt(t.created_at)} · ${t.result_desc||t.status}</div>
       </div>
-      <div class="r-amt">${ksh(t.amount||0)}</div>
-      <span class="bdg ${t.status==='success'?'b-cust':t.status==='failed'?'b-adm':'b-sal'}">${t.status}</span>
-    </div>`).join(''):'<div class="abox info">No M-Pesa transactions yet.</div>';
-};
-async function stkPush(){
-  const phone=document.getElementById('stk-ph').value.trim();
-  const amount=parseFloat(document.getElementById('stk-amt').value);
-  const ref=document.getElementById('stk-ref').value.trim();
-  const errEl=document.getElementById('stk-admin-err'),btn=document.getElementById('stk-admin-btn');
-  errEl.classList.add('hidden');
-  if(!phone||!amount){errEl.textContent='Phone and amount are required.';errEl.classList.remove('hidden');return;}
-  btn.disabled=true;btn.classList.add('spin-btn');
-  try{
-    const result=await callEdgeFunction('mpesa-stk-push',{phone,amount,account_reference:ref||'ALLYSE',description:'Loan Repayment',initiated_by:CU?.user?.id||null});
-    toast(result.message||'STK Push sent! Customer should check their phone.','success');
-    PANEL_RENDERERS['mpesa'](document.getElementById('content'));
-  }catch(e){errEl.textContent='Error: '+e.message;errEl.classList.remove('hidden');}
-  finally{btn.disabled=false;btn.classList.remove('spin-btn');}
+      <div style="text-align:right;flex-shrink:0">
+        <div class="r-amt">${ksh(t.amount||0)}</div>
+        <span class="bdg ${t.status==='success'?'b-cust':t.status==='failed'?'b-adm':'b-sal'}">${t.status}</span>
+      </div>
+    </div>`;
+  }).join(''):'<div class="abox info">No M-Pesa transactions yet.</div>';
 }
 
 // ═══════════════════════════════════════
@@ -2504,44 +2478,22 @@ async function saveApplication(){
 // ═══════════════════════════════════════
 // M-PESA CUSTOMER PAY
 // ═══════════════════════════════════════
+// Update TILL_NUMBER if your Till number ever changes — used only for display here.
+const TILL_NUMBER='4645985';
 function openCustPayModal(loanId,loanNum,phone,weeklyAmt){
   document.getElementById('stk-loan-id').value=loanId||'';
   document.getElementById('stk-cust-ref').value=loanNum||'';
-  document.getElementById('stk-cust-phone').value=phone||CUST_PROFILE?.phone||'';
-  document.getElementById('stk-cust-amt').value=weeklyAmt||'';
-  document.getElementById('stk-paybill-hint').classList.add('hidden');
-  document.getElementById('stk-method').value='M-Pesa Mobile';
+  document.getElementById('stk-till-number').value=TILL_NUMBER;
+  document.getElementById('stk-cust-amt').value=weeklyAmt?`KES ${kshS(weeklyAmt)}`:'';
   document.getElementById('stk-err').classList.add('hidden');
   openModal('m-stk');
 }
-function stkMethodChanged(){
-  const m=document.getElementById('stk-method').value;
-  document.getElementById('stk-paybill-hint').classList.toggle('hidden',m==='M-Pesa Mobile');
-}
-async function custMpesaPay(){
-  const phone=document.getElementById('stk-cust-phone').value.trim();
-  const amt=parseFloat(document.getElementById('stk-cust-amt').value);
-  const loanId=document.getElementById('stk-loan-id').value;
-  const ref=document.getElementById('stk-cust-ref').value;
-  const method=document.getElementById('stk-method').value;
-  const errEl=document.getElementById('stk-err'),btn=document.getElementById('stk-cust-btn');
-  errEl.classList.add('hidden');
-  if(!phone||!amt){errEl.textContent='Phone and amount are required.';errEl.classList.remove('hidden');return;}
-  btn.disabled=true;
-  try{
-    if(method==='M-Pesa Mobile'){
-      // Real STK Push — customer enters PIN on their phone; callback records the payment
-      const result=await callEdgeFunction('mpesa-stk-push',{phone,amount:amt,account_reference:ref||'ALLYSE',description:'Loan Repayment',loan_id:loanId||null,initiated_by:CU?.user?.id||null});
-      closeModal('m-stk');
-      toast(result.message||'STK Push sent! Enter your M-Pesa PIN to complete payment.','success');
-    }else{
-      // Paybill / Till — customer pays manually; just close and remind them
-      closeModal('m-stk');
-      toast(`Please complete your ${method} payment of KES ${kshS(amt)} using the details shown. Your loan will update once confirmed.`,'info');
-    }
-    if(STATE.panel==='my-dash'||STATE.panel==='my-loans'||STATE.panel==='my-payments')showPanel(STATE.panel);
-  }catch(e){errEl.textContent=e.message;errEl.classList.remove('hidden');}
-  finally{btn.disabled=false;}
+function custMpesaPay(){
+  // Payments are confirmed automatically by the Till callback — this just closes
+  // the instructions and reminds the customer their loan updates once received.
+  closeModal('m-stk');
+  toast('Once your M-Pesa payment is received, your loan will update automatically.','info');
+  if(STATE.panel==='my-dash'||STATE.panel==='my-loans'||STATE.panel==='my-payments')showPanel(STATE.panel);
 }
 
 // ═══════════════════════════════════════
@@ -2776,7 +2728,7 @@ PANEL_RENDERERS['my-dash']=async function(el){
         <div class="qa-ico">✦</div><div class="qa-lbl">Apply for Loan</div><div class="qa-desc">Submit a new loan application</div>
       </div>
       <div class="qa-card cust-qa" onclick="${firstActive?`openCustPayModal('${firstActive.id}','${firstActive.loan_number}','${CUST_PROFILE.phone}',${weeklyFor(firstActive.principal,firstActive.instalments).toFixed(2)})`:"showPanel('my-loans')"}">
-        <div class="qa-ico">💚</div><div class="qa-lbl">Make Payment</div><div class="qa-desc">Pay via M-Pesa STK push or Paybill</div>
+        <div class="qa-ico">💚</div><div class="qa-lbl">Make Payment</div><div class="qa-desc">Pay via M-Pesa Till</div>
       </div>
       <div class="qa-card cust-qa" onclick="showPanel('my-loans')">
         <div class="qa-ico">◎</div><div class="qa-lbl">Loan Status</div><div class="qa-desc">View balance, progress, and repayment history</div>
