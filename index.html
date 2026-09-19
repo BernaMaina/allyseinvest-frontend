@@ -1828,6 +1828,10 @@ function refreshAI(){getLoans().then(loans=>{const active=loans.filter(l=>l.stat
 // ═══════════════════════════════════════
 // CRUD — CUSTOMER
 // ═══════════════════════════════════════
+function openEditFromView(c){
+  closeModal('m-ai');
+  openCust({id:c.id,name:c.full_name,phone:c.phone,nid:c.national_id,email:c.email,biz:c.business_name,res:c.residence,county:c.county,mpesa:c.mpesa_number});
+}
 function openCust(prefill={}){
   ['mc-id','mc-name','mc-phone','mc-nid','mc-email','mc-biz','mc-res','mc-county','mc-mpesa'].forEach(id=>{const e=document.getElementById(id);if(e)e.value=prefill[id.replace('mc-','')]||'';});
   document.getElementById('mc-title').textContent=prefill.id?'Edit Customer':'Register Customer';
@@ -1854,7 +1858,7 @@ function viewCust(c){
     </div>
     <div style="display:flex;gap:7px;margin-bottom:16px">
       <button class="btn btn-grn" onclick="quickLoan('${c.id}','${c.full_name}','${c.mpesa_number||c.phone}');closeModal('m-ai')">+ Issue Loan</button>
-      <button class="btn btn-out" onclick="openCust({id:'${c.id}',name:${JSON.stringify(c.full_name||'')},phone:${JSON.stringify(c.phone||'')},nid:${JSON.stringify(c.national_id||'')},email:${JSON.stringify(c.email||'')},biz:${JSON.stringify(c.business_name||'')},res:${JSON.stringify(c.residence||'')},county:${JSON.stringify(c.county||'')},mpesa:${JSON.stringify(c.mpesa_number||'')}});closeModal('m-ai')">✏️ Edit</button>
+      <button class="btn btn-out" onclick="openEditFromView(${JSON.stringify(c).replace(/"/g,'&quot;')})">✏️ Edit</button>
       <button class="btn btn-sap" onclick="toast('SMS via Africa\'s Talking integration','info')">💚 SMS</button>
     </div>
     <div style="padding-top:14px;border-top:1px solid var(--ink5)">
