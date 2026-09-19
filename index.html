@@ -1850,13 +1850,70 @@ function viewCust(c){
   document.getElementById('ai-mc').innerHTML=`
     <div style="display:flex;align-items:center;gap:14px;padding:14px;background:var(--ink3);border-radius:var(--rl);margin-bottom:14px;border:1px solid var(--ink5)">
       <div style="width:52px;height:52px;border-radius:50%;background:linear-gradient(135deg,var(--gold),var(--grn));display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:800;color:var(--ink);flex-shrink:0">${inits(c.full_name)}</div>
-      <div><div style="font-family:'Playfair Display',serif;font-size:18px;font-weight:700">${c.full_name}</div><div style="font-size:11px;color:var(--text3);margin-top:3px">📞 ${c.phone} · 💼 ${c.business_name||'—'} · 📍 ${c.residence||'—'}, ${c.county||'—'}</div><div style="font-size:11px;color:var(--text3)">ID: ${c.national_id||'—'} · M-Pesa: ${c.mpesa_number||c.phone}</div></div>
+      <div><div style="font-family:'Playfair Display',serif;font-size:18px;font-weight:700">${c.full_name}</div><div style="font-size:11px;color:var(--text3);margin-top:3px">📞 ${c.phone} · 💼 ${c.business_name||'—'} · 📍 ${c.residence||'—'}, ${c.county||'—'}</div><div style="font-size:11px;color:var(--text3)">ID: ${c.national_id||'—'} · Main M-Pesa: ${c.mpesa_number||c.phone}</div></div>
     </div>
-    <div style="display:flex;gap:7px">
+    <div style="display:flex;gap:7px;margin-bottom:16px">
       <button class="btn btn-grn" onclick="quickLoan('${c.id}','${c.full_name}','${c.mpesa_number||c.phone}');closeModal('m-ai')">+ Issue Loan</button>
+      <button class="btn btn-out" onclick="openCust({id:'${c.id}',name:${JSON.stringify(c.full_name||'')},phone:${JSON.stringify(c.phone||'')},nid:${JSON.stringify(c.national_id||'')},email:${JSON.stringify(c.email||'')},biz:${JSON.stringify(c.business_name||'')},res:${JSON.stringify(c.residence||'')},county:${JSON.stringify(c.county||'')},mpesa:${JSON.stringify(c.mpesa_number||'')}});closeModal('m-ai')">✏️ Edit</button>
       <button class="btn btn-sap" onclick="toast('SMS via Africa\'s Talking integration','info')">💚 SMS</button>
+    </div>
+    <div style="padding-top:14px;border-top:1px solid var(--ink5)">
+      <label style="display:block;margin-bottom:8px;font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.5px">Alternate M-Pesa Numbers</label>
+      <div style="font-size:11px;color:var(--text3);margin-bottom:10px">A payment from any of these numbers will still be matched to ${c.full_name.split(' ')[0]}'s loan.</div>
+      <div id="ai-alt-list">${loading()}</div>
+      <div style="display:flex;gap:8px;margin-top:10px">
+        <input id="ai-alt-new" placeholder="0712345678 or 254712345678" style="flex:1"/>
+        <button class="btn btn-out btn-sm" onclick="addAltNumber('${c.id}')">+ Add</button>
+      </div>
+      <div id="ai-alt-err" class="abox danger hidden" style="margin-top:8px;font-size:11px"></div>
     </div>`;
   openModal('m-ai');
+  loadAltNumbers(c.id).then(list=>renderAltNumbers(list,c.id));
+}
+async function loadAltNumbers(customerId){
+  const{data,error}=await SB.from('customer_mpesa_numbers').select('id,mpesa_number,is_primary').eq('customer_id',customerId).order('is_primary',{ascending:false});
+  if(error){console.error('Failed to load alt numbers:',error);return[];}
+  return data||[];
+}
+function renderAltNumbers(list,customerId){
+  const box=document.getElementById('ai-alt-list');
+  if(!box)return;
+  if(!list.length){box.innerHTML='<div style="font-size:11px;color:var(--text3)">No numbers on file yet.</div>';return;}
+  box.innerHTML=list.map(n=>`
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;background:var(--ink3);border-radius:var(--r);margin-bottom:6px">
+      <span class="mono" style="font-size:12px">${n.mpesa_number}${n.is_primary?' <span class="bdg b-cust" style="margin-left:6px">Main</span>':''}</span>
+      ${n.is_primary?'':`<button class="btn btn-out btn-sm" onclick="deleteAltNumber('${n.id}','${customerId}')">Remove</button>`}
+    </div>`).join('');
+}
+function normalizeKenyanNumber(raw){
+  let n=(raw||'').replace(/\D/g,'');
+  if(n.startsWith('0'))n='254'+n.slice(1);
+  else if(n.startsWith('7')||n.startsWith('1'))n='254'+n;
+  return n;
+}
+async function addAltNumber(customerId){
+  const input=document.getElementById('ai-alt-new');
+  const errEl=document.getElementById('ai-alt-err');
+  errEl.classList.add('hidden');
+  const num=normalizeKenyanNumber(input.value.trim());
+  if(!/^254\d{9}$/.test(num)){errEl.textContent='Enter a valid Kenyan number (e.g. 0712345678).';errEl.classList.remove('hidden');return;}
+  try{
+    const{error}=await SB.from('customer_mpesa_numbers').insert([{customer_id:customerId,mpesa_number:num,is_primary:false}]);
+    if(error)throw error;
+    input.value='';
+    renderAltNumbers(await loadAltNumbers(customerId),customerId);
+    toast('Alternate number added','success');
+  }catch(e){
+    errEl.textContent=(e.code==='23505')?'This number is already registered to a customer.':e.message;
+    errEl.classList.remove('hidden');
+  }
+}
+async function deleteAltNumber(id,customerId){
+  if(!confirm('Remove this alternate number? Future payments from it will no longer auto-match.'))return;
+  const{error}=await SB.from('customer_mpesa_numbers').delete().eq('id',id);
+  if(error){toast('Failed to remove: '+error.message,'danger');return;}
+  renderAltNumbers(await loadAltNumbers(customerId),customerId);
+  toast('Number removed','success');
 }
 
 // ═══════════════════════════════════════
