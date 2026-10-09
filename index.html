@@ -956,7 +956,7 @@ function computeLoanStatus(loan){
   const wk=Number(loan.weekly_instalment)||weeklyFor(loan.principal,loan.instalments);
   const weeksDue=Math.min(weeksElapsed,loan.instalments||weeksElapsed);
   const expectedByNow=Math.min(weeksDue*wk,total||Infinity);
-  return paid<expectedByNow ? 'overdue' : 'active';
+  return paid<expectedByNow-1 ? 'overdue' : 'active';   // 1 KES tolerance for rounding
 }
 
 // Fetches the sum of all payments per loan_id for a batch of loans in one
@@ -978,23 +978,44 @@ function overdueBreakdown(loan){
   const wk=Number(loan.weekly_instalment)||weeklyFor(loan.principal,loan.instalments);
   const weeksDue=Math.max(0,Math.min(weeksElapsed,loan.instalments||weeksElapsed));
   const expectedByNow=Math.min(weeksDue*wk,total||Infinity);
-  return{weeksElapsed,expectedByNow,paid,shortfall:Math.max(0,expectedByNow-paid),note:null};
+  return{weeksElapsed,expectedByNow,paid,shortfall:(expectedByNow-paid>1?expectedByNow-paid:0),note:null};
 }
 
+// Supabase returns at most 1000 rows per request and long .in() lists can exceed URL limits.
+// Both silently truncated payment totals, making fully-paid customers look underpaid (= false overdue).
+// So: fetch in chunks of 100 loans, page through every 1000 rows, and never guess on failure.
+async function pageAll(build){
+  const out=[];let from=0;
+  for(;;){
+    const{data,error}=await build().range(from,from+999);
+    if(error)throw error;
+    out.push(...(data||[]));
+    if(!data||data.length<1000)break;
+    from+=1000;
+  }
+  return out;
+}
+async function fetchRepaymentTotals(ids){
+  const map={};
+  const chunks=[];for(let i=0;i<ids.length;i+=100)chunks.push(ids.slice(i,i+100));
+  await Promise.all(chunks.map(async chunk=>{
+    const rows=await pageAll(()=>SB.from('payments').select('id,loan_id,amount,type').in('loan_id',chunk).order('id'));
+    rows.filter(isRepayment).forEach(p=>{map[p.loan_id]=(map[p.loan_id]||0)+Number(p.amount||0);});
+  }));
+  return map;
+}
 async function attachPaymentTotals(loans){
   if(!loans||!loans.length)return loans;
-  const ids=loans.map(l=>l.id);
-  const{data,error}=await SB.from('payments').select('loan_id,amount,type').in('loan_id',ids);
-  if(error){
-    console.error('attachPaymentTotals: payments query failed, falling back to paid_count-based status',error);
-    // Still recompute status (via the paid_count fallback inside computeLoanStatus)
-    // instead of leaving whatever was last stored in the DB untouched.
-    loans.forEach(l=>{l.status=computeLoanStatus(l);});
-    return loans;
+  try{
+    const map=await fetchRepaymentTotals(loans.map(l=>l.id));
+    loans.forEach(l=>{l.amount_paid=map[l.id]||0;l.status=computeLoanStatus(l);});
+  }catch(error){
+    // Could not read payments: do NOT recompute from paid_count (Till payments never update it,
+    // which flagged paid-up customers as overdue). Keep the stored status and tell the user.
+    console.error('attachPaymentTotals failed — keeping stored status',error);
+    loans.forEach(l=>{l.amount_paid=null;l.totals_unavailable=true;});
+    try{toast('Could not load payment totals — overdue flags may be out of date. Refresh to retry.','error');}catch(e){}
   }
-  const map={};
-  (data||[]).filter(isRepayment).forEach(p=>{map[p.loan_id]=(map[p.loan_id]||0)+Number(p.amount||0);});
-  loans.forEach(l=>{l.amount_paid=map[l.id]||0;l.status=computeLoanStatus(l);});
   return loans;
 }
 
@@ -1078,11 +1099,11 @@ async function doLogout(){await SB?.auth.signOut();CU=null;showScreen('login');}
 async function getCustomers(){const{data,error}=await SB.from('customers').select('*').order('created_at',{ascending:false});if(error){console.error(error);return[];}return data||[];}
 async function createCustomer(c){const{data,error}=await SB.from('customers').insert([c]).select().single();if(error)throw error;return data;}
 async function updateCustomer(id,c){const{data,error}=await SB.from('customers').update(c).eq('id',id).select().single();if(error)throw error;return data;}
-async function getLoans(){const{data,error}=await SB.from('loans').select(`*, customers(full_name,phone,business_name,residence)`).order('created_at',{ascending:false});if(error){console.error(error);return[];}return attachPaymentTotals(data||[]);}
+async function getLoans(){try{const data=await pageAll(()=>SB.from('loans').select(`*, customers(full_name,phone,business_name,residence)`).order('created_at',{ascending:false}).order('id'));return attachPaymentTotals(data);}catch(error){console.error(error);return[];}}
 async function getLoansByCustomer(custId){const{data,error}=await SB.from('loans').select('*').eq('customer_id',custId).order('created_at',{ascending:false});if(error){console.error(error);return[];}return attachPaymentTotals(data||[]);}
 async function createLoan(loan){const{data,error}=await SB.from('loans').insert([loan]).select().single();if(error)throw error;return data;}
-async function getPayments(loanId){let q=SB.from('payments').select('*').order('paid_at',{ascending:false});if(loanId)q=q.eq('loan_id',loanId);const{data,error}=await q;if(error){console.error(error);return[];}return data||[];}
-async function getAllPayments(){const{data,error}=await SB.from('payments').select(`*, loans(loan_number,customer_id,customers(full_name))`).order('paid_at',{ascending:false});if(error){console.error(error);return[];}return data||[];}
+async function getPayments(loanId){try{return await pageAll(()=>{let q=SB.from('payments').select('*').order('paid_at',{ascending:false}).order('id');if(loanId)q=q.eq('loan_id',loanId);return q;});}catch(error){console.error(error);return[];}}
+async function getAllPayments(){try{return await pageAll(()=>SB.from('payments').select(`*, loans(loan_number,customer_id,customers(full_name))`).order('paid_at',{ascending:false}).order('id'));}catch(error){console.error(error);return[];}}
 async function createPayment(payment){const{data,error}=await SB.from('payments').insert([payment]).select().single();if(error)throw error;return data;}
 async function getApplications(){const{data,error}=await SB.from('loan_applications').select('*').order('created_at',{ascending:false});if(error){console.error(error);return[];}return data||[];}
 async function getProfiles(){const{data,error}=await SB.from('profiles').select('*').order('full_name');if(error){console.error(error);return[];}return data||[];}
@@ -1126,7 +1147,7 @@ function weeksDueByNow(startDate,instalments){
 function daysOverdue(l){
   if(!l.start_date)return 0;
   const wk=Number(l.weekly_instalment)||weeklyFor(l.principal,l.instalments);
-  const k=Math.floor(Number(l.amount_paid||0)/wk)+1;
+  const k=Math.floor((Number(l.amount_paid||0)+1)/wk)+1;
   return Math.max(0,daysBetween(l.start_date,today())-7*k);
 }
 const overdueTag=l=>{const d=daysOverdue(l);return d>0?`<b class="ruby">${d} day${d===1?'':'s'} overdue</b>`:'overdue';};
@@ -1652,7 +1673,7 @@ PANEL_RENDERERS['reports']=async function(el){
 // ═══════════════════════════════════════
 PANEL_RENDERERS['analytics']=async function(el){
   el.innerHTML=loading();
-  const [loans,payments]=await Promise.all([getLoans(),SB.from('payments').select('*,loans(loan_number,registration_fee,processing_fee,weekly_instalment,interest,principal,total_repayable,start_date,customers(full_name))').order('paid_at').then(r=>(r.data||[]).filter(isRepayment))]);
+  const [loans,payments]=await Promise.all([getLoans(),pageAll(()=>SB.from('payments').select('*,loans(loan_number,registration_fee,processing_fee,weekly_instalment,interest,principal,total_repayable,start_date,customers(full_name))').order('paid_at').order('id')).then(r=>r.filter(isRepayment)).catch(()=>[])]);
   const byW={4:0,6:0,8:0,10:0,12:0};
   loans.forEach(l=>{if(byW[l.instalments]!==undefined)byW[l.instalments]++;});
   const mx=Math.max(...Object.values(byW),1);
