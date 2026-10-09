@@ -713,6 +713,8 @@ body{font-family:'Outfit',sans-serif;background:var(--ink);color:var(--text);min
     <input type="hidden" id="mp-lid"/>
     <div class="mpesa-hint">💚 Paste the M-Pesa confirmation code from the customer's message.</div>
     <div class="f2">
+      <div class="iw hidden" id="mp-loan-wrap" style="grid-column:1/-1"><label>Loan *</label><select id="mp-loan-sel" onchange="onPayLoanPick()"></select></div>
+      <div class="iw"><label>Payment Type</label><select id="mp-type"><option value="repayment">Loan repayment</option><option value="fee">Fee (registration / processing)</option></select></div>
       <div class="iw"><label>Amount (KES) *</label><input type="number" id="mp-amt"/></div>
       <div class="iw"><label>Payment Date *</label><input type="date" id="mp-date"/></div>
       <div class="iw"><label>M-Pesa Receipt *</label><input id="mp-ref" placeholder="QHJ7K8XXXXXX"/></div>
@@ -949,7 +951,7 @@ function computeLoanStatus(loan){
   const startMs=new Date(loan.start_date).getTime();
   if(isNaN(startMs))return loan.status||'active'; // unparseable/legacy date value — don't silently mark active
   const msPerWeek=7*24*3600*1000;
-  const weeksElapsed=Math.floor((Date.now()-startMs)/msPerWeek);
+  const weeksElapsed=weeksDueByNow(loan.start_date,loan.instalments);
   if(weeksElapsed<=0)return 'active'; // still inside the first 7-day window
   const wk=Number(loan.weekly_instalment)||weeklyFor(loan.principal,loan.instalments);
   const weeksDue=Math.min(weeksElapsed,loan.instalments||weeksElapsed);
@@ -972,7 +974,7 @@ function overdueBreakdown(loan){
   const startMs=new Date(loan.start_date).getTime();
   if(isNaN(startMs))return{weeksElapsed:null,expectedByNow:null,paid,shortfall:null,note:`⚠ Loan date ("${loan.start_date}") isn't a recognisable date — overdue cannot be computed.`};
   const msPerWeek=7*24*3600*1000;
-  const weeksElapsed=Math.floor((Date.now()-startMs)/msPerWeek);
+  const weeksElapsed=weeksDueByNow(loan.start_date,loan.instalments);
   const wk=Number(loan.weekly_instalment)||weeklyFor(loan.principal,loan.instalments);
   const weeksDue=Math.max(0,Math.min(weeksElapsed,loan.instalments||weeksElapsed));
   const expectedByNow=Math.min(weeksDue*wk,total||Infinity);
@@ -982,7 +984,7 @@ function overdueBreakdown(loan){
 async function attachPaymentTotals(loans){
   if(!loans||!loans.length)return loans;
   const ids=loans.map(l=>l.id);
-  const{data,error}=await SB.from('payments').select('loan_id,amount').in('loan_id',ids);
+  const{data,error}=await SB.from('payments').select('loan_id,amount,type').in('loan_id',ids);
   if(error){
     console.error('attachPaymentTotals: payments query failed, falling back to paid_count-based status',error);
     // Still recompute status (via the paid_count fallback inside computeLoanStatus)
@@ -991,7 +993,7 @@ async function attachPaymentTotals(loans){
     return loans;
   }
   const map={};
-  (data||[]).forEach(p=>{map[p.loan_id]=(map[p.loan_id]||0)+Number(p.amount||0);});
+  (data||[]).filter(isRepayment).forEach(p=>{map[p.loan_id]=(map[p.loan_id]||0)+Number(p.amount||0);});
   loans.forEach(l=>{l.amount_paid=map[l.id]||0;l.status=computeLoanStatus(l);});
   return loans;
 }
@@ -1106,7 +1108,28 @@ const fmt=d=>{try{return new Date(d).toLocaleDateString('en-KE',{day:'2-digit',m
 const fmts=d=>{try{return new Date(d).toLocaleDateString('en-KE',{day:'2-digit',month:'short'});}catch{return d;}};
 const addDays=(d,n)=>{const dt=new Date(d);dt.setDate(dt.getDate()+n);return dt.toISOString().slice(0,10);};
 const addWeeks=(d,w)=>addDays(d,w*7);
-const today=()=>new Date().toISOString().slice(0,10);
+const today=()=>new Date().toLocaleDateString('en-CA',{timeZone:'Africa/Nairobi'}); // Nairobi calendar date
+// ── FEES: registration 200 (first-ever loan only) + processing 500 (every loan) ──
+const REG_FEE=200, PROCESSING_FEE=500;
+const feesFor=isFirst=>({reg:isFirst?REG_FEE:0,proc:PROCESSING_FEE,total:(isFirst?REG_FEE:0)+PROCESSING_FEE});
+// Only repayments count toward a loan balance / collections. Fees and unmatched payments do not.
+const isRepayment=p=>!p||p.type==null||p.type==='repayment';
+const typeBadge=p=>p&&p.type==='fee'?'<span class="bdg b-pend" style="margin-left:4px">fee</span>':p&&p.type==='unmatched'?'<span class="bdg b-ov" style="margin-left:4px">unmatched</span>':'';
+// ── OVERDUE DATE MATH (date-only, Nairobi). Instalment k is due on day 7k; overdue from day 7k+1 ──
+const daysBetween=(a,b)=>Math.round((Date.parse(String(b).slice(0,10))-Date.parse(String(a).slice(0,10)))/86400000);
+function weeksDueByNow(startDate,instalments){
+  const days=daysBetween(startDate,today());
+  if(isNaN(days)||days<1)return 0;
+  return Math.max(0,Math.min(instalments||Infinity,Math.floor((days-1)/7)));
+}
+// Days since the earliest still-unpaid instalment fell due (0 if not overdue)
+function daysOverdue(l){
+  if(!l.start_date)return 0;
+  const wk=Number(l.weekly_instalment)||weeklyFor(l.principal,l.instalments);
+  const k=Math.floor(Number(l.amount_paid||0)/wk)+1;
+  return Math.max(0,daysBetween(l.start_date,today())-7*k);
+}
+const overdueTag=l=>{const d=daysOverdue(l);return d>0?`<b class="ruby">${d} day${d===1?'':'s'} overdue</b>`:'overdue';};
 // Returns {monday, sunday} (as Date objects, start/end of day) for the
 // Monday-Sunday calendar week containing the given date (default: now).
 function getWeekBounds(d){
@@ -1130,12 +1153,12 @@ function showScreen(n){document.querySelectorAll('.screen').forEach(s=>s.classLi
 const NAV_CFG={
   admin:[
     {sec:'Overview',items:[{id:'dash',ico:'◈',lbl:'Dashboard'},{id:'analytics',ico:'◩',lbl:'Analytics'},{id:'reminders',ico:'🔔',lbl:'Alerts',badge:'alerts'}]},
-    {sec:'Operations',items:[{id:'applications',ico:'✦',lbl:'Applications',badge:'apps'},{id:'loans',ico:'◎',lbl:'All Loans'},{id:'payments',ico:'⬡',lbl:'Payments'},{id:'amort',ico:'⊞',lbl:'Loan Calculator'}]},
+    {sec:'Operations',items:[{id:'applications',ico:'✦',lbl:'Applications',badge:'apps'},{id:'loans',ico:'◎',lbl:'All Loans'},{id:'payments',ico:'⬡',lbl:'Payments'},{id:'review',ico:'⚑',lbl:'Needs Review',badge:'review'},{id:'amort',ico:'⊞',lbl:'Loan Calculator'}]},
     {sec:'Customers',items:[{id:'customers',ico:'◷',lbl:'Customer Registry'},{id:'import',ico:'📊',lbl:'Import Excel'},{id:'mpesa',ico:'💚',lbl:'M-Pesa'}]},
     {sec:'Admin',items:[{id:'users',ico:'◈',lbl:'System Users'},{id:'reports',ico:'◩',lbl:'Reports'},{id:'planner',ico:'🤖',lbl:'AI Planner'}]},
   ],
   loan_officer:[
-    {sec:'My Work',items:[{id:'dash',ico:'◈',lbl:'Dashboard'},{id:'customers',ico:'◷',lbl:'Customers'},{id:'import',ico:'📊',lbl:'Import Excel'},{id:'loans',ico:'◎',lbl:'Loans'},{id:'payments',ico:'⬡',lbl:'Record Payment'}]},
+    {sec:'My Work',items:[{id:'dash',ico:'◈',lbl:'Dashboard'},{id:'customers',ico:'◷',lbl:'Customers'},{id:'import',ico:'📊',lbl:'Import Excel'},{id:'loans',ico:'◎',lbl:'Loans'},{id:'payments',ico:'⬡',lbl:'Record Payment'},{id:'review',ico:'⚑',lbl:'Needs Review',badge:'review'}]},
     {sec:'Tools',items:[{id:'amort',ico:'⊞',lbl:'Calculator'},{id:'reminders',ico:'🔔',lbl:'Reminders'},{id:'planner',ico:'🤖',lbl:'AI Planner'}]},
   ],
   // Customer sees only their own data
@@ -1146,6 +1169,7 @@ const NAV_CFG={
 };
 
 const TITLES={
+  review:'Needs <span>Review</span>',
   dash:'Dashboard <span>Overview</span>',analytics:'Portfolio <span>Analytics</span>',
   applications:'Loan <span>Applications</span>',loans:'All <span>Loans</span>',
   payments:'Payment <span>Records</span>',amort:'Loan <span>Calculator</span>',
@@ -1168,6 +1192,7 @@ function buildSidebar(badgeCounts={}){
     s.items.forEach(it=>{
       let bdg='';
       if(it.badge==='apps'&&(badgeCounts.apps||0)>0)bdg=`<span class="sb-badge gold">${badgeCounts.apps}</span>`;
+      if(it.badge==='review'&&(badgeCounts.review||0)>0)bdg=`<span class="sb-badge gold">${badgeCounts.review}</span>`;
       if(it.badge==='alerts'&&(badgeCounts.overdue||0)>0)bdg=`<span class="sb-badge">${badgeCounts.overdue}</span>`;
       html+=`<div class="sb-item" id="nav-${it.id}" onclick="showPanel('${it.id}')"><span class="ico">${it.ico}</span>${it.lbl}${bdg}</div>`;
     });
@@ -1209,7 +1234,8 @@ async function startApp(){
   // Load badge counts async for staff
   try{
     const[apps,loans]=await Promise.all([getApplications(),getLoans()]);
-    buildSidebar({apps:apps.filter(a=>a.status==='pending').length,overdue:loans.filter(l=>l.status==='overdue').length});
+    let rvCount=0;try{const{count}=await SB.from('payments').select('id',{count:'exact',head:true}).or('type.eq.unmatched,loan_id.is.null');rvCount=count||0;}catch(e){}
+    buildSidebar({review:rvCount,apps:apps.filter(a=>a.status==='pending').length,overdue:loans.filter(l=>l.status==='overdue').length});
     const dot=document.getElementById('nb-dot');
     if(dot)dot.classList.toggle('hidden',loans.filter(l=>l.status==='overdue').length===0);
   }catch(e){}
@@ -1351,7 +1377,7 @@ PANEL_RENDERERS['my-payments']=async function(el){
     allPays.push(...p.map(py=>({...py,_loanNum:loan?.loan_number||'—'})));
   }
   allPays.sort((a,b)=>new Date(b.paid_at)-new Date(a.paid_at));
-  const total=allPays.reduce((s,p)=>s+Number(p.amount),0);
+  const total=allPays.filter(isRepayment).reduce((s,p)=>s+Number(p.amount),0);
 
   el.innerHTML=`
   <div class="sec-hd"><div class="sec-title">My <span>Payments</span></div></div>
@@ -1383,7 +1409,7 @@ PANEL_RENDERERS['dash']=async function(el){
   let portVal=0,expW=0;
   loans.filter(l=>l.status!=='paid').forEach(l=>{portVal+=getOutstandingCalc(l);expW+=weeklyFor(l.principal,l.instalments);});
   const expM=expW*4;
-  const todayPays=payments.filter(p=>p.paid_at?.slice(0,10)===today());
+  const todayPays=payments.filter(p=>isRepayment(p)&&p.paid_at?.slice(0,10)===today());
   const todayTotal=todayPays.reduce((s,p)=>s+Number(p.amount),0);
   el.innerHTML=`
   <div class="sg">
@@ -1407,7 +1433,7 @@ PANEL_RENDERERS['dash']=async function(el){
           <div class="er"><span class="er-p">Outstanding</span><span class="er-a">${ksh(portVal)}</span></div>
         </div>
       </div>
-      ${ov.length>0?`<div class="card"><div class="card-hd"><span class="card-hd-t">⚠ Overdue Accounts</span><button class="btn btn-ruby btn-sm" onclick="showPanel('reminders')">View All</button></div><div class="card-body">${ov.map(l=>`<div class="ri-item"><div class="ri-ico d">⚠</div><div style="flex:1"><div class="ri-txt"><b>${l.customers?.full_name||'—'}</b> — #${l.loan_number}</div><div class="ri-meta">${l.customers?.phone||''} · ${ksh(getOutstandingCalc(l))} outstanding</div></div><button class="btn btn-grn btn-sm" onclick="openPayModal('${l.id}','${l.loan_number}')">Pay</button></div>`).join('')}</div></div>`:''}
+      ${ov.length>0?`<div class="card"><div class="card-hd"><span class="card-hd-t">⚠ Overdue Accounts</span><button class="btn btn-ruby btn-sm" onclick="showPanel('reminders')">View All</button></div><div class="card-body">${ov.map(l=>`<div class="ri-item"><div class="ri-ico d">⚠</div><div style="flex:1"><div class="ri-txt"><b>${l.customers?.full_name||'—'}</b> — #${l.loan_number}</div><div class="ri-meta">${l.customers?.phone||''} · ${ksh(getOutstandingCalc(l))} outstanding · ${overdueTag(l)}</div></div><button class="btn btn-grn btn-sm" onclick="openPayModal('${l.id}','${l.loan_number}')">Pay</button></div>`).join('')}</div></div>`:''}
     </div>
     <div>
       <div class="card">
@@ -1473,12 +1499,12 @@ function filterLoans(){const q=(document.getElementById('ls')?.value||'').toLowe
 PANEL_RENDERERS['payments']=async function(el){
   el.innerHTML=loading();
   const pays=await getAllPayments();
-  const total=pays.reduce((s,p)=>s+Number(p.amount),0);
+  const total=pays.filter(isRepayment).reduce((s,p)=>s+Number(p.amount),0);
   el.innerHTML=`
   <div class="sec-hd"><div class="sec-title">Payment <span>Records</span></div><button class="btn btn-grn btn-sm" onclick="openPayModal('','')">+ Record Payment</button></div>
   <div class="card"><div class="tw"><table class="dtbl">
     <thead><tr><th>Date</th><th>Loan #</th><th>Customer</th><th>Instalment #</th><th>Amount</th><th>Channel</th><th>M-Pesa Receipt</th></tr></thead>
-    <tbody>${pays.map(p=>`<tr><td>${fmt(p.paid_at)}</td><td class="mono muted">${p.loans?.loan_number||'—'}</td><td>${p.loans?.customers?.full_name||'—'}</td><td style="text-align:center">${p.instalment_no||'—'}</td><td class="mono grn">${ksh(p.amount)}</td><td><span class="bdg b-act">${p.channel}</span></td><td class="mono muted">${p.mpesa_receipt||'—'}</td></tr>`).join('')}</tbody>
+    <tbody>${pays.map(p=>`<tr><td>${fmt(p.paid_at)}</td><td class="mono muted">${p.loans?.loan_number||'—'}</td><td>${p.loans?.customers?.full_name||'—'}</td><td style="text-align:center">${p.instalment_no||'—'}</td><td class="mono grn">${ksh(p.amount)}</td><td><span class="bdg b-act">${p.channel}</span>${typeBadge(p)}</td><td class="mono muted">${p.mpesa_receipt||'—'}</td></tr>`).join('')}</tbody>
     <tfoot><tr><td colspan="4">TOTAL COLLECTED</td><td class="mono gold">${ksh(total)}</td><td colspan="2"></td></tr></tfoot>
   </table></div></div>`;
 };
@@ -1516,7 +1542,7 @@ PANEL_RENDERERS['reminders']=async function(el){
     <div class="sc"><div class="sc-lbl">Due This Week</div><div class="sc-val gold">${dueWk.length}</div></div>
     <div class="sc sa"><div class="sc-lbl">Pending Applications</div><div class="sc-val sap">${pend.length}</div></div>
   </div>
-  ${ov.length>0?`<div class="card"><div class="card-hd"><span class="card-hd-t">🔴 Overdue Accounts</span></div><div class="card-body">${ov.map(l=>`<div class="ri-item"><div class="ri-ico d">⚠</div><div style="flex:1"><div class="ri-txt"><b>${l.customers?.full_name||'—'}</b> — #${l.loan_number}</div><div class="ri-meta">${l.customers?.phone||''} · ${ksh(getOutstandingCalc(l))} outstanding</div></div><button class="btn btn-grn btn-sm" onclick="openPayModal('${l.id}','${l.loan_number}')">Pay</button></div>`).join('')}</div></div>`:''}
+  ${ov.length>0?`<div class="card"><div class="card-hd"><span class="card-hd-t">🔴 Overdue Accounts</span></div><div class="card-body">${ov.map(l=>`<div class="ri-item"><div class="ri-ico d">⚠</div><div style="flex:1"><div class="ri-txt"><b>${l.customers?.full_name||'—'}</b> — #${l.loan_number}</div><div class="ri-meta">${l.customers?.phone||''} · ${ksh(getOutstandingCalc(l))} outstanding · ${overdueTag(l)}</div></div><button class="btn btn-grn btn-sm" onclick="openPayModal('${l.id}','${l.loan_number}')">Pay</button></div>`).join('')}</div></div>`:''}
   <div class="card"><div class="card-hd"><span class="card-hd-t">🟡 Due This Week</span></div><div class="card-body">${dueWk.length===0?'<div class="muted" style="text-align:center;padding:18px">No payments due this week</div>':dueWk.map(l=>`<div class="ri-item"><div class="ri-ico w">⏰</div><div style="flex:1"><div class="ri-txt"><b>${l.customers?.full_name||'—'}</b></div><div class="ri-meta">${fmt(addWeeks(l.start_date,l.paid_count+1))} · ${l.collection_day||''}</div></div><div style="display:flex;gap:4px;align-items:center"><span class="mono gold">${ksh(weeklyFor(l.principal,l.instalments))}</span><button class="btn btn-grn btn-sm" onclick="openPayModal('${l.id}','${l.loan_number}')">Pay</button></div></div>`).join('')}</div></div>`;
 };
 
@@ -1543,7 +1569,7 @@ function genAmort(){
   if(!p||!w)return;
   const r=gRate(p),wk=weeklyFor(p,w),tot=totalFor(p,w),int=r.i[w],pPer=p/w,iPer=int/w;
   const sc=document.getElementById('at-sum'),sb=document.getElementById('at-sumb');
-  if(sc){sc.classList.remove('hidden');sb.innerHTML=`<div class="sbox"><div class="sr"><span class="muted">Principal</span><span>${ksh(p)}</span></div><div class="sr"><span class="muted">Reg Fee</span><span>KES 200 <span style="font-size:10px;color:var(--text3)">(first loan only — KES 0 for repeat)</span></span></div><div class="sr"><span class="muted">Processing Fee</span><span>${ksh(r.pf)}</span></div><div class="sr"><span class="muted">Total Interest</span><span>${ksh(int)}</span></div><div class="sr"><span class="muted">Total Repayable</span><span>${ksh(tot)}</span></div><div class="sr"><span>Weekly</span><span>${ksh(wk)}</span></div></div>`;}
+  if(sc){sc.classList.remove('hidden');sb.innerHTML=`<div class="sbox"><div class="sr"><span class="muted">Principal</span><span>${ksh(p)}</span></div><div class="sr"><span class="muted">Reg Fee</span><span>KES 200 <span style="font-size:10px;color:var(--text3)">(first loan only — KES 0 for repeat)</span></span></div><div class="sr"><span class="muted">Processing Fee</span><span>${ksh(PROCESSING_FEE)}</span></div><div class="sr"><span class="muted">Total Interest</span><span>${ksh(int)}</span></div><div class="sr"><span class="muted">Total Repayable</span><span>${ksh(tot)}</span></div><div class="sr"><span>Weekly</span><span>${ksh(wk)}</span></div></div>`;}
   const tc=document.getElementById('at-tcard'),tbody=document.getElementById('at-tbody'),tfoot=document.getElementById('at-tfoot');
   if(!tc||!tbody||!tfoot)return;
   tc.classList.remove('hidden');
@@ -1586,7 +1612,7 @@ PANEL_RENDERERS['users']=async function(el){
 // ═══════════════════════════════════════
 PANEL_RENDERERS['reports']=async function(el){
   el.innerHTML=loading();
-  const[loans,payments,customers]=await Promise.all([getLoans(),getAllPayments(),getCustomers()]);
+  const[loans,payments,customers]=await Promise.all([getLoans(),getAllPayments().then(a=>a.filter(isRepayment)),getCustomers()]);
   const td=loans.reduce((s,l)=>s+Number(l.principal),0),tc=payments.reduce((s,p)=>s+Number(p.amount),0),ti=loans.reduce((s,l)=>s+Number(l.interest||0),0);
   // Split fees: registration_fee is 200 for first loans, 0 for repeats (stored correctly per loan).
   const trf=loans.reduce((s,l)=>s+Number(l.registration_fee||0),0);
@@ -1626,7 +1652,7 @@ PANEL_RENDERERS['reports']=async function(el){
 // ═══════════════════════════════════════
 PANEL_RENDERERS['analytics']=async function(el){
   el.innerHTML=loading();
-  const [loans,payments]=await Promise.all([getLoans(),SB.from('payments').select('*,loans(loan_number,registration_fee,processing_fee,weekly_instalment,interest,principal,total_repayable,start_date,customers(full_name))').order('paid_at').then(r=>r.data||[])]);
+  const [loans,payments]=await Promise.all([getLoans(),SB.from('payments').select('*,loans(loan_number,registration_fee,processing_fee,weekly_instalment,interest,principal,total_repayable,start_date,customers(full_name))').order('paid_at').then(r=>(r.data||[]).filter(isRepayment))]);
   const byW={4:0,6:0,8:0,10:0,12:0};
   loans.forEach(l=>{if(byW[l.instalments]!==undefined)byW[l.instalments]++;});
   const mx=Math.max(...Object.values(byW),1);
@@ -1675,7 +1701,7 @@ PANEL_RENDERERS['analytics']=async function(el){
   // Tally loan disbursements by month (use start_date).
   // Fees are read directly from the DB columns which are set correctly at loan creation:
   //   registration_fee = 200 for first-ever loan, 0 for repeat customers.
-  //   processing_fee   = rate-card value for that principal.
+  //   processing_fee   = flat KES 500 on every loan.
   loans.forEach(l=>{
     const bk=getMonthBucket(l.start_date||new Date().toISOString().slice(0,10));
     if(!monthMap[bk])monthMap[bk]={loans:0,disbursed:0,collected:0,interest:0,regFees:0,procFees:0,cleared:0,overdue:0,firstLoans:0,repeatLoans:0};
@@ -1956,7 +1982,7 @@ async function loanPreview(){
     rfEl.style.color=regFee===0?'var(--grn3)':'var(--text)';
   }
   document.getElementById('lp-p').textContent=ksh(p);
-  document.getElementById('lp-pf').textContent=ksh(r.pf);
+  document.getElementById('lp-pf').textContent=ksh(PROCESSING_FEE);
   document.getElementById('lp-i').textContent=ksh(r.i[w]);
   document.getElementById('lp-t').textContent=ksh(totalFor(p,w));
   document.getElementById('lp-w').textContent=ksh(weeklyFor(p,w));
@@ -1974,7 +2000,7 @@ async function saveLoan(){
     const priorLoans=await getLoansByCustomer(cid);
     const regFee=priorLoans.length>0?0:200;
     const loanNum=await genLoanNumber();
-    await createLoan({loan_number:loanNum,customer_id:cid,issued_by:CU.user.id,principal:p,interest:r.i[w],total_repayable:tot,instalments:w,paid_count:0,start_date:d,due_date:addWeeks(d,w),collection_day:document.getElementById('ml-day').value,purpose:document.getElementById('ml-purpose').value,registration_fee:regFee,processing_fee:r.pf,weekly_instalment:wk,status:'active'});
+    await createLoan({loan_number:loanNum,customer_id:cid,issued_by:CU.user.id,principal:p,interest:r.i[w],total_repayable:tot,instalments:w,paid_count:0,start_date:d,due_date:addWeeks(d,w),collection_day:document.getElementById('ml-day').value,purpose:document.getElementById('ml-purpose').value,registration_fee:regFee,processing_fee:PROCESSING_FEE,fee_due:regFee+PROCESSING_FEE,fee_received:0,fee_paid:false,weekly_instalment:wk,status:'active'});
     closeModal('m-loan');toast(`Loan ${loanNum} issued — ${ksh(p)} disbursed!`,'success');
     if(STATE.panel==='loans'||STATE.panel==='dash')showPanel(STATE.panel);
   }catch(e){errEl.textContent=e.message;errEl.classList.remove('hidden');}
@@ -1984,14 +2010,14 @@ async function viewLoan(id){
   const{data:l}=await SB.from('loans').select(`*, customers(full_name,phone,business_name)`).eq('id',id).single();
   if(!l)return;
   const pays=await getPayments(id);
-  l.amount_paid=pays.reduce((s,p)=>s+Number(p.amount||0),0);
+  l.amount_paid=pays.filter(isRepayment).reduce((s,p)=>s+Number(p.amount||0),0);
   l.status=computeLoanStatus(l);
   const out=getOutstandingCalc(l),wk=weeklyFor(l.principal,l.instalments);
   const bd=overdueBreakdown(l);
   const diagHtml=bd.note
     ? `<div class="abox warn" style="margin-top:10px;font-size:11px">${bd.note}</div>`
     : `<div class="abox ${l.status==='overdue'?'danger':'success'}" style="margin-top:10px;font-size:11px;line-height:1.7">
-        <b>Overdue check</b> · Loan date: ${fmt(l.start_date)} → ${bd.weeksElapsed} full week(s) elapsed<br>
+        <b>Overdue check</b> · Loan date: ${fmt(l.start_date)} → ${bd.weeksElapsed} instalment(s) due (overdue from day 8 after each due date)<br>
         Expected paid by now: ${ksh(bd.expectedByNow)} · Actually paid: ${ksh(bd.paid)}<br>
         ${bd.shortfall>0?`<b class="ruby">Shortfall: ${ksh(bd.shortfall)} → OVERDUE</b>`:'<b class="grn">Caught up → not overdue</b>'}
       </div>`;
@@ -2003,7 +2029,7 @@ async function viewLoan(id){
     <div class="wdots">${dots}</div></div>
     ${diagHtml}
     <div style="font-size:10px;letter-spacing:2px;text-transform:uppercase;color:var(--text3);margin:14px 0 8px;font-weight:700">PAYMENT HISTORY</div>
-    ${pays.length===0?'<div class="muted">No payments recorded yet</div>':pays.map(p=>`<div class="er"><span class="mono muted" style="min-width:80px">${fmts(p.paid_at)}</span><span class="grn mono">${ksh(p.amount)}</span><span class="bdg b-act">${p.channel}</span><span class="muted" style="font-size:10px">${p.mpesa_receipt||''}</span></div>`).join('')}
+    ${pays.length===0?'<div class="muted">No payments recorded yet</div>':pays.map(p=>`<div class="er"><span class="mono muted" style="min-width:80px">${fmts(p.paid_at)}</span><span class="grn mono">${ksh(p.amount)}</span><span class="bdg b-act">${p.channel}</span>${typeBadge(p)}<span class="muted" style="font-size:10px">${p.mpesa_receipt||''}</span></div>`).join('')}
     ${l.status!=='paid'?`<div style="margin-top:14px"><button class="btn btn-grn" onclick="openPayModal('${l.id}','${l.loan_number}');closeModal('m-ai')">⬡ Record Payment</button></div>`:''}`;
   openModal('m-ai');
 }
@@ -2011,41 +2037,87 @@ async function viewLoan(id){
 // ═══════════════════════════════════════
 // CRUD — PAYMENT
 // ═══════════════════════════════════════
+async function prefillPay(loanId){
+  const{data:l}=await SB.from('loans').select('*').eq('id',loanId).single();
+  if(l){document.getElementById('mp-amt').value=Number(l.weekly_instalment||weeklyFor(l.principal,l.instalments)).toFixed(2);document.getElementById('mp-inst').value=(l.paid_count||0)+1;}
+}
 async function openPayModal(loanId,loanNum){
   document.getElementById('mp-lid').value=loanId||'';
   document.getElementById('mp-date').value=today();
   document.getElementById('mp-ref').value='';document.getElementById('mp-inst').value='';document.getElementById('mp-amt').value='';
+  document.getElementById('mp-type').value='repayment';
   document.getElementById('mp-err').classList.add('hidden');
-  if(loanId){const{data:l}=await SB.from('loans').select('*').eq('id',loanId).single();if(l){document.getElementById('mp-amt').value=weeklyFor(l.principal,l.instalments).toFixed(2);document.getElementById('mp-inst').value=(l.paid_count||0)+1;}}
+  const wrap=document.getElementById('mp-loan-wrap'),sel=document.getElementById('mp-loan-sel');
+  if(loanId){wrap.classList.add('hidden');await prefillPay(loanId);}
+  else{
+    wrap.classList.remove('hidden');sel.innerHTML='<option value="">Loading…</option>';
+    const open=(await getLoans()).filter(l=>l.status!=='paid');
+    sel.innerHTML='<option value="">— Select loan —</option>'+open.map(l=>`<option value="${l.id}">#${l.loan_number} · ${l.customers?.full_name||'—'}</option>`).join('');
+  }
   openModal('m-pay');
 }
+async function onPayLoanPick(){const id=document.getElementById('mp-loan-sel').value;document.getElementById('mp-lid').value=id;if(id)await prefillPay(id);}
+
+// Recalculate paid_count + status from REPAYMENTS only (fees / unmatched never count).
+async function recalcLoan(loanId){
+  const{data:l}=await SB.from('loans').select('*').eq('id',loanId).single();
+  if(!l)return;
+  const{data:rows}=await SB.from('payments').select('amount,type').eq('loan_id',loanId);
+  const totalPaid=(rows||[]).filter(isRepayment).reduce((s,p)=>s+Number(p.amount||0),0);
+  const wk=Number(l.weekly_instalment)||weeklyFor(l.principal,l.instalments);
+  const newCount=Math.min(l.instalments,Math.floor(totalPaid/wk));
+  const newStatus=computeLoanStatus({...l,amount_paid:totalPaid});
+  await SB.from('loans').update({paid_count:newCount,status:newStatus}).eq('id',loanId);
+}
+// Add a fee payment to the loan's fee tally (incremental — never resets back to unpaid).
+async function addFeeReceived(loanId,amt){
+  const{data:l}=await SB.from('loans').select('fee_due,fee_received').eq('id',loanId).single();
+  if(!l)return;
+  const rec=Number(l.fee_received||0)+Number(amt);
+  await SB.from('loans').update({fee_received:rec,fee_paid:rec>=Number(l.fee_due||0)}).eq('id',loanId);
+}
 async function savePayment(){
-  const loanId=document.getElementById('mp-lid').value,amt=parseFloat(document.getElementById('mp-amt').value),date=document.getElementById('mp-date').value,ref=document.getElementById('mp-ref').value.trim();
+  const loanId=document.getElementById('mp-lid').value||document.getElementById('mp-loan-sel').value;
+  const amt=parseFloat(document.getElementById('mp-amt').value),date=document.getElementById('mp-date').value,ref=document.getElementById('mp-ref').value.trim();
+  const type=document.getElementById('mp-type').value;
   const errEl=document.getElementById('mp-err'),btn=document.getElementById('mp-save');
   errEl.classList.add('hidden');
+  if(!loanId){errEl.textContent='Select the loan this payment belongs to.';errEl.classList.remove('hidden');return;}
   if(!amt||!date){errEl.textContent='Amount and date are required.';errEl.classList.remove('hidden');return;}
   btn.disabled=true;btn.classList.add('spin-btn');
   try{
-    await createPayment({loan_id:loanId||null,amount:amt,mpesa_receipt:ref||null,channel:document.getElementById('mp-via').value,instalment_no:parseInt(document.getElementById('mp-inst').value)||null,paid_at:new Date(date).toISOString(),recorded_by:CU.user.id});
-    if(loanId){
-      const{data:l}=await SB.from('loans').select('instalments,weekly_instalment,total_repayable,principal,start_date').eq('id',loanId).single();
-      if(l){
-        const{data:payRows}=await SB.from('payments').select('amount').eq('loan_id',loanId);
-        const totalPaid=(payRows||[]).reduce((s,p)=>s+Number(p.amount||0),0);
-        // paid_count = how many FULL weekly instalments the cumulative payments cover.
-        // A partial payment will NOT bump this up, so progress dots / "week cleared"
-        // indicators won't falsely show a week as fully paid.
-        const newCount=Math.min(l.instalments,Math.floor(totalPaid/l.weekly_instalment));
-        // Status uses the same overdue rule as the rest of the app: cumulative
-        // paid vs. cumulative amount due by elapsed weeks since start_date.
-        const newStatus=computeLoanStatus({...l,amount_paid:totalPaid});
-        await SB.from('loans').update({paid_count:newCount,status:newStatus}).eq('id',loanId);
-      }
-    }
-    closeModal('m-pay');toast(`Payment of ${ksh(amt)} recorded!`,'success');
-    if(['payments','loans','dash','reminders'].includes(STATE.panel))showPanel(STATE.panel);
+    await createPayment({loan_id:loanId,amount:amt,mpesa_receipt:ref||null,channel:document.getElementById('mp-via').value,instalment_no:type==='repayment'?(parseInt(document.getElementById('mp-inst').value)||null):null,paid_at:new Date(date).toISOString(),recorded_by:CU.user.id,type});
+    if(type==='fee')await addFeeReceived(loanId,amt);else await recalcLoan(loanId);
+    closeModal('m-pay');toast(`${type==='fee'?'Fee':'Payment'} of ${ksh(amt)} recorded!`,'success');
+    if(['payments','loans','dash','reminders','review'].includes(STATE.panel))showPanel(STATE.panel);
   }catch(e){errEl.textContent=e.message;errEl.classList.remove('hidden');}
   finally{btn.disabled=false;btn.classList.remove('spin-btn');}
+}
+
+// ═══════════════════════════════════════
+// NEEDS REVIEW — payments the Till couldn't confidently match
+// ═══════════════════════════════════════
+PANEL_RENDERERS['review']=async function(el){
+  el.innerHTML='<div class="page-load">Loading…</div>';
+  const{data:pays,error}=await SB.from('payments').select('*').or('type.eq.unmatched,loan_id.is.null').order('paid_at',{ascending:false});
+  if(error){el.innerHTML=`<div class="abox danger">${error.message}</div>`;return;}
+  const loans=(await getLoans()).filter(l=>l.status!=='paid');
+  const opts='<option value="">— Select loan —</option>'+loans.map(l=>`<option value="${l.id}">#${l.loan_number} · ${l.customers?.full_name||'—'}</option>`).join('');
+  el.innerHTML=`<div class="sec-hd"><div class="sec-title">Needs <span>Review</span></div></div>
+  <div class="abox info" style="margin-bottom:12px">Payments that arrived without a confident loan match or type. Choose the loan, then mark each as a <b>repayment</b> or a <b>fee</b> (registration/processing).</div>
+  <div class="card"><div class="tw"><table class="dtbl"><thead><tr><th>Date</th><th>Amount</th><th>Channel</th><th>Receipt</th><th>Loan</th><th></th></tr></thead><tbody>
+  ${pays.length===0?'<tr><td colspan="6" style="text-align:center;color:var(--text3);padding:24px">Nothing to review ✓</td></tr>':pays.map(p=>`<tr><td>${fmt(p.paid_at)}</td><td class="mono gold">${ksh(p.amount)}</td><td>${p.channel||'—'}</td><td class="mono muted">${p.mpesa_receipt||'—'}</td><td><select id="rv-${p.id}" style="min-width:170px">${opts.replace(`value="${p.loan_id}"`,`value="${p.loan_id}" selected`)}</select></td><td style="display:flex;gap:3px"><button class="btn btn-grn btn-sm" onclick="resolvePayment('${p.id}','repayment')">Repayment</button><button class="btn btn-out btn-sm" onclick="resolvePayment('${p.id}','fee')">Fee</button></td></tr>`).join('')}
+  </tbody></table></div></div>`;
+};
+async function resolvePayment(id,kind){
+  const loanId=document.getElementById('rv-'+id)?.value;
+  if(!loanId){toast('Choose a loan first','error');return;}
+  try{
+    const{data:p,error}=await SB.from('payments').update({loan_id:loanId,type:kind}).eq('id',id).select().single();
+    if(error)throw error;
+    if(kind==='fee')await addFeeReceived(loanId,p.amount);else await recalcLoan(loanId);
+    toast('Payment updated','success');showPanel('review');
+  }catch(e){toast(e.message||'Update failed','error');}
 }
 
 // ═══════════════════════════════════════
@@ -2369,7 +2441,7 @@ async function doImport(){
             instalments:row.w,paid_count:row.paidCount,start_date:startDate,
             due_date:addWeeks(startDate,row.w),collection_day:normalizeDay(row.day),
             purpose:'Business / Working Capital',registration_fee:regFee,
-            processing_fee:rc?rc.pf||0:0,weekly_instalment:wk,status:row.loanStatus
+            processing_fee:PROCESSING_FEE,weekly_instalment:wk,status:row.loanStatus
           });
           // Record each paid instalment with correct date = loanDate + (week * 7 days).
           // computeLoanStatus() already zeroed out any week whose due date is still in
@@ -2514,7 +2586,7 @@ function appPreview(){
   if(!p||!w){prev.classList.add('hidden');return;}
   prev.classList.remove('hidden');
   const r=gRate(p);
-  prev.innerHTML=`<div class="sr"><span class="muted">Principal</span><span>${ksh(p)}</span></div><div class="sr"><span class="muted">Processing Fee</span><span>${ksh(r.pf)}</span></div><div class="sr"><span class="muted">Total Interest</span><span>${ksh(r.i[w])}</span></div><div class="sr"><span class="muted">Total Repayable</span><span>${ksh(totalFor(p,w))}</span></div><div class="sr"><span>Weekly Instalment</span><span class="gold mono">${ksh(weeklyFor(p,w))}</span></div>`;
+  prev.innerHTML=`<div class="sr"><span class="muted">Principal</span><span>${ksh(p)}</span></div><div class="sr"><span class="muted">Processing Fee</span><span>${ksh(PROCESSING_FEE)}</span></div><div class="sr"><span class="muted">Total Interest</span><span>${ksh(r.i[w])}</span></div><div class="sr"><span class="muted">Total Repayable</span><span>${ksh(totalFor(p,w))}</span></div><div class="sr"><span>Weekly Instalment</span><span class="gold mono">${ksh(weeklyFor(p,w))}</span></div>`;
 }
 async function saveApplication(){
   const name=document.getElementById('ap-name').value.trim(),phone=document.getElementById('ap-phone').value.trim(),p=parseInt(document.getElementById('ap-p').value),w=parseInt(document.getElementById('ap-i').value),notes=document.getElementById('ap-notes').value.trim();
@@ -2605,11 +2677,11 @@ async function getSMSLog(){const{data,error}=await SB.from('sms_log').select('*'
 PANEL_RENDERERS['admin-payments']=async function(el){
   el.innerHTML='<div class="page-load">Loading payment overview…</div>';
   const pays=await getAllPayments();
-  const total=pays.reduce((s,p)=>s+Number(p.amount),0);
+  const total=pays.filter(isRepayment).reduce((s,p)=>s+Number(p.amount),0);
   // Group by channel
   const byChannel=pays.reduce((acc,p)=>{const ch=p.channel||'Unknown';if(!acc[ch])acc[ch]={n:0,t:0};acc[ch].n++;acc[ch].t+=Number(p.amount);return acc;},{});
   const chIcos={'M-Pesa Mobile':'📱','M-Pesa Paybill':'🏦','M-Pesa Till':'💳','Cash':'💵','Bank Transfer':'🏛','Cheque':'📋'};
-  const todayPays=pays.filter(p=>p.paid_at?.slice(0,10)===today());
+  const todayPays=pays.filter(p=>isRepayment(p)&&p.paid_at?.slice(0,10)===today());
   const todayTotal=todayPays.reduce((s,p)=>s+Number(p.amount),0);
   const mpPays=pays.filter(p=>p.channel?.includes('M-Pesa'));
   const mpTotal=mpPays.reduce((s,p)=>s+Number(p.amount),0);
@@ -2701,7 +2773,7 @@ async function _salesDash(el){
   <div class="two-col">
     <div>
       ${myOverdue.length>0?`<div class="card"><div class="card-hd"><span class="card-hd-t">⚠ Overdue Accounts</span><button class="btn btn-ruby btn-sm" onclick="sendBatchOverdueSMS()">📱 SMS All</button></div><div class="card-body">
-        ${myOverdue.map(l=>`<div class="ri-item"><div class="ri-ico d">⚠</div><div style="flex:1"><div class="ri-txt"><b>${l.customers?.full_name||'—'}</b><span class="muted" style="margin-left:6px;font-size:10px">#${l.loan_number}</span></div><div class="ri-meta">${l.customers?.phone||''} · ${ksh(getOutstandingCalc(l))} outstanding</div></div><div style="display:flex;gap:4px"><button class="btn btn-grn btn-sm" onclick="openPayModal('${l.id}','${l.loan_number}')">Pay</button><button class="btn btn-out btn-sm" onclick="openSMSModal('${l.customers?.phone||''}','overdue',{name:'${(l.customers?.full_name||'').replace(/'/g,'')}',loanNum:'${l.loan_number}',amt:'${kshS(getOutstandingCalc(l))}'})">SMS</button></div></div>`).join('')}
+        ${myOverdue.map(l=>`<div class="ri-item"><div class="ri-ico d">⚠</div><div style="flex:1"><div class="ri-txt"><b>${l.customers?.full_name||'—'}</b><span class="muted" style="margin-left:6px;font-size:10px">#${l.loan_number}</span></div><div class="ri-meta">${l.customers?.phone||''} · ${ksh(getOutstandingCalc(l))} outstanding · ${overdueTag(l)}</div></div><div style="display:flex;gap:4px"><button class="btn btn-grn btn-sm" onclick="openPayModal('${l.id}','${l.loan_number}')">Pay</button><button class="btn btn-out btn-sm" onclick="openSMSModal('${l.customers?.phone||''}','overdue',{name:'${(l.customers?.full_name||'').replace(/'/g,'')}',loanNum:'${l.loan_number}',amt:'${kshS(getOutstandingCalc(l))}'})">SMS</button></div></div>`).join('')}
       </div></div>`:'<div class="abox success">✓ No overdue accounts. Great work!</div>'}
     </div>
     <div>
@@ -2750,7 +2822,7 @@ function myAppPreview(){
   if(!p||!w){prev.classList.add('hidden');return;}
   prev.classList.remove('hidden');
   const r=gRate(p);
-  prev.innerHTML=`<div class="sr"><span class="muted">Principal</span><span>${ksh(p)}</span></div><div class="sr"><span class="muted">Processing Fee</span><span>${ksh(r.pf)}</span></div><div class="sr"><span class="muted">Total Interest</span><span>${ksh(r.i[w])}</span></div><div class="sr"><span class="muted">Total Repayable</span><span>${ksh(totalFor(p,w))}</span></div><div class="sr"><span>Weekly Instalment</span><span class="gold mono">${ksh(weeklyFor(p,w))}</span></div>`;
+  prev.innerHTML=`<div class="sr"><span class="muted">Principal</span><span>${ksh(p)}</span></div><div class="sr"><span class="muted">Processing Fee</span><span>${ksh(PROCESSING_FEE)}</span></div><div class="sr"><span class="muted">Total Interest</span><span>${ksh(r.i[w])}</span></div><div class="sr"><span class="muted">Total Repayable</span><span>${ksh(totalFor(p,w))}</span></div><div class="sr"><span>Weekly Instalment</span><span class="gold mono">${ksh(weeklyFor(p,w))}</span></div>`;
 }
 async function submitMyApp(custId,name,phone){
   const p=parseInt(document.getElementById('my-ap-p').value),w=parseInt(document.getElementById('my-ap-i').value),notes=document.getElementById('my-ap-notes').value.trim();
